@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DETool</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://code.highcharts.com/stock/highstock.js"></script>
+  <script src="https://code.highcharts.com/modules/exporting.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <h1>DETool</h1>
+      <div id="statusBar" class="status-bar">Status: Ready</div>
+      <button id="mainOptionsBtn" class="action-btn">Settings</button>
+    </header>
+    <div id="mainContainer" class="main-container">
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-header">
+          <input type="text" id="tagFilter" placeholder="Filter tags..." />
+          <div id="selectionSummary" class="selection-summary">0/0</div>
+        </div>
+        <div class="sidebar-actions">
+          <button id="selectAllBtn" class="action-btn">Select All</button>
+          <button id="deselectAllBtn" class="action-btn">Deselect All</button>
+          <button id="refreshTagsBtn" class="action-btn">Refresh Tags</button>
+          <button id="tagOptionsGear" class="action-btn">&#9881;</button>
+        </div>
+        <div id="tagTree" class="tag-tree"></div>
+      </aside>
+      <section id="content" class="content">
+        <div id="controls" class="controls-section">
+          <div class="left-controls">
+            <label>
+              Start Date/Time:
+              <input type="text" id="startDate" class="datetime-picker" />
+            </label>
+            <label>
+              End Date/Time:
+              <input type="text" id="endDate" class="datetime-picker" />
+            </label>
+            <button id="graphBtn" class="action-btn">Graph</button>
+            <button id="exportDataBtn" class="action-btn">Export Data</button>
+            <button id="generateReportBtn" class="action-btn">Generate Report</button>
+          </div>
+          <div class="auto-refresh-controls">
+            <span>Day Lines:</span>
+            <label class="switch">
+              <input type="checkbox" id="dayLinesToggle" />
+              <span class="slider"></span>
+            </label>
+            <span>Auto Refresh:</span>
+            <label class="switch">
+              <input type="checkbox" id="autoRefreshToggle" />
+              <span class="slider"></span>
+            </label>
+            <div class="polling-container">
+              <button class="polling-btn" data-interval="1000">1s</button>
+              <button class="polling-btn selected" data-interval="5000">5s</button>
+              <button class="polling-btn" data-interval="10000">10s</button>
+              <button class="polling-btn" data-interval="30000">30s</button>
+            </div>
+          </div>
+        </div>
+        <div id="chartContainer" class="chart-container"></div>
+        <div id="dataTableContainer" class="data-table-container"></div>
+      </section>
+    </div>
+    <div id="mainOptionsPanel" class="slide-panel">
+      <div class="panel-header">
+        <h2>Settings</h2>
+        <span class="close-btn" id="mainOptionsCloseBtn">&times;</span>
+      </div>
+      <div id="mainOptionsContainer">
+        <div class="option-item">
+          <label for="darkModeToggle">App Dark Mode:</label>
+          <label class="switch">
+            <input type="checkbox" id="darkModeToggle" checked />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="option-item">
+          <span>Grouping Mode:</span>
+          <div id="groupingModeOptions">
+            <button class="grouping-option" data-value="0">0</button>
+            <button class="grouping-option" data-value="1">1</button>
+            <button class="grouping-option" data-value="2">2</button>
+          </div>
+        </div>
+        <div class="option-item">
+          <span>Sort Order:</span>
+          <button class="action-btn sort-order-btn" data-order="asc">Asc</button>
+          <button class="action-btn sort-order-btn" data-order="desc">Desc</button>
+        </div>
+        <div class="option-item">
+          <label for="dataOffsetInput">Data Offset (hours):</label>
+          <input type="number" id="dataOffsetInput" value="1" style="width:80px;" />
+        </div>
+        <div class="option-item">
+          <label for="bargeNameInput">Barge Name:</label>
+          <input type="text" id="bargeNameInput" placeholder="Enter Barge Name" style="width:250px;" />
+        </div>
+        <div class="option-item">
+          <label for="bargeNumberInput">FH Number:</label>
+          <input type="text" id="bargeNumberInput" placeholder="Enter FH Number" style="width:150px;" />
+        </div>
+        <div class="option-item">
+          <button id="saveSettingsBtn" class="action-btn">Save Settings</button>
+        </div>
+      </div>
+    </div>
+    <div id="tagOptionsModal" class="modal">
+      <div class="modal-content">
+        <span id="tagOptionsClose" class="close">&times;</span>
+        <h2>Tag Options</h2>
+        <div class="tag-options-header">
+          <div class="tag-col">Tag</div>
+          <div class="settings-col">Scale</div>
+          <div class="settings-col">Error</div>
+          <div class="settings-col">Max Decimal</div>
+        </div>
+        <div id="tagOptionsContainer"></div>
+        <button id="saveTagOptionsBtn" class="action-btn">Save Options</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
