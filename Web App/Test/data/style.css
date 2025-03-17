@@ -57,7 +57,7 @@ button.action-btn {
   border: none;
   border-radius: 4px;
   padding: 7px 14px;
-  font-size: 0.95em;
+  font-size: 1em;
   cursor: pointer;
   transition: background-color 0.3s ease;
   white-space: nowrap;
@@ -74,8 +74,8 @@ button.action-btn:hover {
 }
 
 #tagOptionsGear {
-  font-size: 0.95em;
-  padding: 7px 14px;
+  font-size: 1.3em;
+  padding: 2.5px 10px;
   background-color: var(--accent-color);
   color: #fff;
   border: none;
@@ -204,18 +204,16 @@ input:checked + .slider:before {
   padding: 8px 10px;
   margin-bottom: 6px;
   cursor: pointer;
-  border-radius: 3px;
+  border-radius: 0;
   transition: background 0.3s;
   text-align: left;
-}
-
-.tag-tree li:hover {
-  background-color: #eaeaea;
+  display: block;
 }
 
 .tag-tree li.selected {
   background-color: var(--accent-color);
   color: #fff;
+  width: 100%;
 }
 
 .controls-section {

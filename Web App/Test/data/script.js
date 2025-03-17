@@ -1,53 +1,52 @@
+// ------------------ Global Settings & Initialization ------------------
 Highcharts.setOptions({ time: { useUTC: false } });
 
+// Re-add Highcharts "pling" effect.
+Highcharts.wrap(Highcharts.Series.prototype, 'addPoint', function (proceed, point, redraw, shift, animation) {
+  proceed.apply(this, Array.prototype.slice.call(arguments, 1));
+  if (!this.pulse) {
+    this.pulse = this.chart.renderer.circle().add(this.markerGroup);
+  }
+  const xVal = Array.isArray(point) ? point[0] : point.x;
+  const yVal = Array.isArray(point) ? point[1] : point.y;
+  const markerRadius = (this.options.marker && this.options.marker.radius) || 4;
+  setTimeout(() => {
+    this.pulse
+      .attr({
+        x: this.xAxis.toPixels(xVal, true),
+        y: this.yAxis.toPixels(yVal, true),
+        r: markerRadius,
+        opacity: 1,
+        fill: this.color
+      })
+      .animate({ r: markerRadius * 5, opacity: 0 }, { duration: 1000 });
+  }, 1);
+});
+
+let lastProcessedData = []; // Processed data for chart and table (filled data from server)
+let chart = null;
+
+let fullTagList = [];
+let displayTagList = [];
+let selectedTags = new Set();
+let sortOrder = localStorage.getItem("sortOrder") || "asc";
+let groupingMode = localStorage.getItem("groupingMode") || "0";
+let autoRefreshInterval = 5000;
+let autoRefreshTimer = null;
+
+// ------------------ Logging Function ------------------
 function logStatus(message) {
-  console.log(message);
   const statusBar = document.getElementById("statusBar");
-  if (statusBar) statusBar.textContent = "Status: " + message;
+  if (statusBar) {
+    statusBar.textContent = "Status: " + message;
+    console.log(message);
+  }
 }
 
-let db;
-function openDatabase() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open("DEToolData", 1);
-    request.onupgradeneeded = function(event) {
-      db = event.target.result;
-      if (!db.objectStoreNames.contains("seriesData")) {
-        db.createObjectStore("seriesData", { keyPath: "tag" });
-      }
-    };
-    request.onsuccess = function(event) {
-      db = event.target.result;
-      resolve(db);
-    };
-    request.onerror = function(event) {
-      reject("IndexedDB error");
-    };
-  });
-}
-function getSeriesData(tag) {
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(["seriesData"], "readonly");
-    const store = transaction.objectStore("seriesData");
-    const request = store.get(tag);
-    request.onsuccess = () => resolve(request.result ? request.result.data : []);
-    request.onerror = () => reject("Error getting data");
-  });
-}
-function putSeriesData(tag, data) {
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(["seriesData"], "readwrite");
-    const store = transaction.objectStore("seriesData");
-    const request = store.put({ tag: tag, data: data });
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject("Error storing data");
-  });
-}
-
+// ------------------ Utility Functions ------------------
 function loadLogo(callback) {
   const logoImage = new Image();
   logoImage.crossOrigin = "anonymous";
-  // Logo is stored in /data folder as logo.png
   logoImage.src = "/data/logo.png";
   logoImage.onload = function () {
     try {
@@ -67,6 +66,7 @@ function loadLogo(callback) {
     callback(null);
   };
 }
+
 function getCurrentDateString() {
   const now = new Date();
   const yyyy = now.getFullYear();
@@ -74,19 +74,25 @@ function getCurrentDateString() {
   const dd = String(now.getDate()).padStart(2, "0");
   return `${yyyy}${mm}${dd}`;
 }
+
 function generateFileName() {
   const bargeName = document.getElementById("bargeNameInput").value || "UnknownBarge";
   const fhNumber = document.getElementById("bargeNumberInput").value || "0000";
   return `FH ${fhNumber} ${bargeName} ${getCurrentDateString()}`;
 }
-function formatDateTimeForInput(date) {
-  const yyyy = date.getFullYear();
-  const mm = String(date.getMonth() + 1).padStart(2, "0");
+
+function formatTimestamp(ts) {
+  const date = new Date(ts);
   const dd = String(date.getDate()).padStart(2, "0");
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const yyyy = date.getFullYear();
   const hh = String(date.getHours()).padStart(2, "0");
   const min = String(date.getMinutes()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  return `${dd}/${mm}/${yyyy} ${hh}:${min}:${ss}`;
 }
+
+// Note: We remove any extra fillSeriesData call since the server now returns filled data.
 
 function generateMultiLevelHeader(seriesHeaders) {
   const headerParts = seriesHeaders.map(header => {
@@ -119,77 +125,79 @@ function generateMultiLevelHeader(seriesHeaders) {
   return [row1, row2, row3];
 }
 
-let oldExtremes = [];
-function zoom() {
-  oldExtremes = [chart.xAxis[0].min, chart.xAxis[0].max];
-  chart.xAxis[0].setExtremes(1356998400000, 1366998400000);
-}
-function zoomBack() {
-  chart.xAxis[0].setExtremes(oldExtremes[0], oldExtremes[1]);
-}
-
-const today = new Date();
-const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0);
-const currentTime = new Date();
-flatpickr("#startDate", {
-  enableTime: true,
-  time_24hr: true,
-  dateFormat: "Y-m-d H:i",
-  defaultDate: startOfDay
-});
-flatpickr("#endDate", {
-  enableTime: true,
-  time_24hr: true,
-  dateFormat: "Y-m-d H:i",
-  defaultDate: currentTime
-});
-
-let fullTagList = [];
-let displayTagList = [];
-let selectedTags = new Set();
-let rawSeriesData = {};
-let lastSeriesData = [];
-let chart = null;
-let sortOrder = localStorage.getItem("sortOrder") || "asc";
-let groupingMode = localStorage.getItem("groupingMode") || "0";
-let dataOffset = parseInt(localStorage.getItem("dataOffset") || "-1");
-let autoRefreshInterval = 5000;
-let autoRefreshTimer = null;
-let queryStartTimes = {};
-let globalEndMultiplier = 1;
-
-function deepClone(data) {
-  return JSON.parse(JSON.stringify(data));
-}
-function applyDisplayOffset(seriesData) {
-  const displayOffsetMs = -dataOffset * 3600 * 1000;
-  return seriesData.map(series => ({
-    name: series.name,
-    data: series.data.map(pt => [pt[0] + displayOffsetMs, pt[1]])
-  }));
+function mergeSeriesData(seriesData, xMin, xMax) {
+  const timestampSet = new Set();
+  seriesData.forEach(series => {
+    series.data.forEach(point => {
+      if (xMin === undefined || xMax === undefined || (point[0] >= xMin && point[0] <= xMax)) {
+        timestampSet.add(point[0]);
+      }
+    });
+  });
+  const timestamps = Array.from(timestampSet).sort((a, b) => a - b);
+  const header = ["Timestamp", ...seriesData.map(s => s.name)];
+  const rows = [header];
+  timestamps.forEach(ts => {
+    const row = [formatTimestamp(ts)];
+    seriesData.forEach(series => {
+      // Use the filled data returned by the server directly.
+      const found = series.data.find(p => p[0] === ts);
+      row.push(found ? found[1] : "");
+    });
+    rows.push(row);
+  });
+  return rows;
 }
 
-function adjustLayout() {
-  const content = document.getElementById("content");
-  const chartContainer = document.getElementById("chartContainer");
-  if (chart && content && chartContainer) {
-    chart.setSize(content.clientWidth, chartContainer.clientHeight, false);
+function renderDataTable(seriesData) {
+  const container = document.getElementById("dataTableContainer");
+  let html = "<table style='width:100%; border-collapse:collapse;'><thead>";
+  html += "<tr><th rowspan='3' style='border:1px solid #ccc; padding:5px; text-align:center;'>Timestamp</th>";
+  const multiHeader = generateMultiLevelHeader(seriesData.map(s => s.name));
+  multiHeader[0].forEach(cell => {
+    html += `<th colspan='${cell.colSpan}' style='border:1px solid #ccc; padding:5px; text-align:center; border-bottom:2px solid #000;'>${cell.content}</th>`;
+  });
+  html += "</tr><tr>";
+  multiHeader[1].forEach(cell => {
+    html += `<th colspan='${cell.colSpan}' style='border:1px solid #ccc; padding:5px; text-align:center;'>${cell.content}</th>`;
+  });
+  html += "</tr><tr>";
+  multiHeader[2].forEach(cell => {
+    html += `<th style='border:1px solid #ccc; padding:5px; text-align:center; border-bottom:2px solid #000;'>${cell.content}</th>`;
+  });
+  html += "</tr></thead>";
+  const rows = mergeSeriesData(seriesData);
+  html += "<tbody>";
+  for (let i = 1; i < rows.length; i++) {
+    html += "<tr>";
+    rows[i].forEach(cell => {
+      html += `<td style='border:1px solid #ccc; padding:5px; white-space:nowrap; text-align:center;'>${cell}</td>`;
+    });
+    html += "</tr>";
   }
+  html += "</tbody></table>";
+  container.innerHTML = html;
 }
-window.addEventListener("resize", adjustLayout);
-adjustLayout();
-document.addEventListener("DOMContentLoaded", function () {
-  const chartContainer = document.getElementById("chartContainer");
-  if (chartContainer) {
-    chartContainer.style.height = "600px";
-  }
-});
 
+function getVisibleSeriesData() {
+  if (chart && chart.xAxis && typeof chart.xAxis[0].min === "number") {
+    const min = chart.xAxis[0].min;
+    const max = chart.xAxis[0].max;
+    return lastProcessedData.map(series => ({
+      name: series.name,
+      data: series.data.filter(point => point[0] >= min && point[0] <= max)
+    }));
+  }
+  return lastProcessedData;
+}
+
+// ------------------ Grouping Functions for Tag Tree ------------------
 function buildFlatTree(list) {
   let sorted = list.slice().sort((a, b) => a.Tag.localeCompare(b.Tag));
   if (sortOrder === "desc") sorted.reverse();
   return sorted;
 }
+
 function buildOneGroup(list) {
   let groups = {};
   list.forEach(item => {
@@ -201,6 +209,7 @@ function buildOneGroup(list) {
   });
   return groups;
 }
+
 function buildTwoGroup(list) {
   let mainGroups = {};
   list.forEach(item => {
@@ -214,6 +223,7 @@ function buildTwoGroup(list) {
   });
   return mainGroups;
 }
+
 function buildTreeFromDisplay(list) {
   displayTagList = list;
   const container = document.getElementById("tagTree");
@@ -223,10 +233,17 @@ function buildTreeFromDisplay(list) {
     buildFlatTree(list).forEach(item => {
       const li = document.createElement("li");
       li.textContent = item.Tag;
-      li.classList.toggle("selected", selectedTags.has(item.Tag));
+      if (selectedTags.has(item.Tag)) {
+        li.classList.add("selected");
+      }
       li.addEventListener("click", e => {
         e.stopPropagation();
-        selectedTags.has(item.Tag) ? selectedTags.delete(item.Tag) : selectedTags.add(item.Tag);
+        if (selectedTags.has(item.Tag)) {
+          selectedTags.delete(item.Tag);
+        } else {
+          selectedTags.add(item.Tag);
+        }
+        updateSelectionSummary();
         buildTreeFromDisplay(list);
       });
       ul.appendChild(li);
@@ -241,6 +258,7 @@ function buildTreeFromDisplay(list) {
       .forEach(group => {
         const groupLi = document.createElement("li");
         groupLi.textContent = group;
+        groupLi.classList.add("group-header");
         const toggleBtn = document.createElement("button");
         toggleBtn.textContent = "Toggle All";
         toggleBtn.className = "action-btn";
@@ -249,8 +267,10 @@ function buildTreeFromDisplay(list) {
           e.stopPropagation();
           const allSelected = groups[group].every(item => selectedTags.has(item.full));
           groups[group].forEach(item => {
-            allSelected ? selectedTags.delete(item.full) : selectedTags.add(item.full);
+            if (allSelected) { selectedTags.delete(item.full); }
+            else { selectedTags.add(item.full); }
           });
+          updateSelectionSummary();
           buildTreeFromDisplay(list);
         });
         groupLi.appendChild(toggleBtn);
@@ -261,10 +281,14 @@ function buildTreeFromDisplay(list) {
           .forEach(item => {
             const li = document.createElement("li");
             li.textContent = item.display;
-            li.classList.toggle("selected", selectedTags.has(item.full));
+            if (selectedTags.has(item.full)) {
+              li.classList.add("selected");
+            }
             li.addEventListener("click", e => {
               e.stopPropagation();
-              selectedTags.has(item.full) ? selectedTags.delete(item.full) : selectedTags.add(item.full);
+              if (selectedTags.has(item.full)) { selectedTags.delete(item.full); }
+              else { selectedTags.add(item.full); }
+              updateSelectionSummary();
               buildTreeFromDisplay(list);
             });
             subUl.appendChild(li);
@@ -281,6 +305,7 @@ function buildTreeFromDisplay(list) {
       .forEach(main => {
         const mainLi = document.createElement("li");
         mainLi.textContent = main;
+        mainLi.classList.add("group-header");
         ul.appendChild(mainLi);
         Object.keys(mainGroups[main])
           .sort((a, b) => sortOrder === "desc" ? b.localeCompare(a) : a.localeCompare(b))
@@ -289,6 +314,7 @@ function buildTreeFromDisplay(list) {
               const subLi = document.createElement("li");
               subLi.style.marginLeft = "20px";
               subLi.textContent = sub;
+              subLi.classList.add("group-header");
               const toggleBtn = document.createElement("button");
               toggleBtn.textContent = "Toggle All";
               toggleBtn.className = "action-btn";
@@ -297,8 +323,10 @@ function buildTreeFromDisplay(list) {
                 e.stopPropagation();
                 const allSelected = mainGroups[main][sub].every(item => selectedTags.has(item.full));
                 mainGroups[main][sub].forEach(item => {
-                  allSelected ? selectedTags.delete(item.full) : selectedTags.add(item.full);
+                  if (allSelected) { selectedTags.delete(item.full); }
+                  else { selectedTags.add(item.full); }
                 });
+                updateSelectionSummary();
                 buildTreeFromDisplay(list);
               });
               subLi.appendChild(toggleBtn);
@@ -310,10 +338,14 @@ function buildTreeFromDisplay(list) {
                 .forEach(item => {
                   const li = document.createElement("li");
                   li.textContent = item.display;
-                  li.classList.toggle("selected", selectedTags.has(item.full));
+                  if (selectedTags.has(item.full)) {
+                    li.classList.add("selected");
+                  }
                   li.addEventListener("click", e => {
                     e.stopPropagation();
-                    selectedTags.has(item.full) ? selectedTags.delete(item.full) : selectedTags.add(item.full);
+                    if (selectedTags.has(item.full)) { selectedTags.delete(item.full); }
+                    else { selectedTags.add(item.full); }
+                    updateSelectionSummary();
                     buildTreeFromDisplay(list);
                   });
                   tagUl.appendChild(li);
@@ -330,368 +362,85 @@ function buildTreeFromDisplay(list) {
 
 function updateSelectionSummary() {
   const total = fullTagList.length;
-  document.getElementById("selectionSummary").textContent = `${selectedTags.size}/${total}`;
+  document.getElementById("selectionSummary").textContent = `${selectedTags.size} / ${total}`;
 }
 
-document.getElementById("selectAllBtn").addEventListener("click", () => {
-  displayTagList.forEach(item => selectedTags.add(item.Tag));
-  buildTreeFromDisplay(displayTagList);
-});
-document.getElementById("deselectAllBtn").addEventListener("click", () => {
-  displayTagList.forEach(item => selectedTags.delete(item.Tag));
-  buildTreeFromDisplay(displayTagList);
-});
-document.getElementById("tagFilter").addEventListener("input", () => {
-  const text = document.getElementById("tagFilter").value.trim().toLowerCase();
-  if (!text) {
-    buildTreeFromDisplay(fullTagList);
-    displayTagList = fullTagList;
-    return;
-  }
-  const filtered = fullTagList.filter(item => item.Tag.toLowerCase().includes(text));
-  displayTagList = filtered;
-  buildTreeFromDisplay(filtered);
-});
+// ------------------ Settings Display & Event Listeners ------------------
+function updateSettingsDisplay() {
+  // Additional UI updates can be done here if needed.
+}
+updateSettingsDisplay();
 
-// ---------- Fetch Tag List (with Status Updates) ----------
-async function asyncFetchTagList() {
-  logStatus("Fetching tag list...");
-  try {
-    const response = await fetch("/taglist");
-    if (!response.ok) throw new Error("HTTP error " + response.status);
-    const tagListData = await response.json();
-    fullTagList = tagListData;
-    localStorage.setItem("tagList", JSON.stringify(tagListData));
-    buildTreeFromDisplay(tagListData);
-    logStatus("Tag list fetched successfully.");
-  } catch (error) {
-    logStatus("Failed to fetch tag list: " + error.message);
-    console.error("Failed to fetch tag list:", error);
-  }
-}
-function loadTagListFromCache() {
-  const cached = localStorage.getItem("tagList");
-  if (cached) {
-    try {
-      const cachedTagList = JSON.parse(cached);
-      fullTagList = cachedTagList;
-      displayTagList = cachedTagList;
-      buildTreeFromDisplay(cachedTagList);
-      logStatus("Tag list loaded from cache.");
-    } catch (e) {
-      console.error("Error parsing cached tag list:", e);
-    }
-  }
-}
-loadTagListFromCache();
-asyncFetchTagList();
-document.getElementById("refreshTagsBtn").addEventListener("click", () => { asyncFetchTagList(); });
-window.addEventListener("beforeunload", function() {
-  localStorage.removeItem("tagList");
-  navigator.sendBeacon("/clear_cache");
-});
-
-// ---------- Settings & Options ----------
-function saveSettings() {
-  try {
-    const darkMode = document.getElementById("darkModeToggle").checked;
-    localStorage.setItem("darkMode", darkMode);
-    localStorage.setItem("groupingMode", groupingMode);
-    localStorage.setItem("sortOrder", sortOrder);
-    const offsetVal = document.getElementById("dataOffsetInput").value;
-    localStorage.setItem("dataOffset", offsetVal);
-    dataOffset = parseInt(offsetVal);
-    const bargeName = document.getElementById("bargeNameInput").value;
-    const fhNumber = document.getElementById("bargeNumberInput").value;
-    localStorage.setItem("bargeName", bargeName);
-    localStorage.setItem("bargeNumber", fhNumber);
-  } catch (e) {
-    console.error("Error saving settings:", e);
-  }
-}
-function updateGroupingOptionsUI() {
-  document.querySelectorAll(".grouping-option").forEach(btn => {
-    if (btn.getAttribute("data-value") === groupingMode)
-      btn.classList.add("selected");
-    else
-      btn.classList.remove("selected");
-  });
-  saveSettings();
-  buildTreeFromDisplay(displayTagList);
-}
 function loadSettings() {
-  try {
-    if (localStorage.getItem("darkMode") === null)
-      localStorage.setItem("darkMode", "true");
-    const darkMode = localStorage.getItem("darkMode") === "true";
-    document.body.classList.toggle("dark-mode", darkMode);
-    document.getElementById("darkModeToggle").checked = darkMode;
-    groupingMode = localStorage.getItem("groupingMode") || "0";
-    sortOrder = localStorage.getItem("sortOrder") || "asc";
-    dataOffset = parseInt(localStorage.getItem("dataOffset") || "1");
-    document.getElementById("dataOffsetInput").value = dataOffset;
-    document.getElementById("bargeNameInput").value = localStorage.getItem("bargeName") || "";
-    document.getElementById("bargeNumberInput").value = localStorage.getItem("bargeNumber") || "";
-  } catch (e) {
-    console.error("LocalStorage error, using defaults", e);
-    document.body.classList.add("dark-mode");
-    document.getElementById("darkModeToggle").checked = true;
-    groupingMode = "0";
-    sortOrder = "asc";
-    dataOffset = 1;
-    document.getElementById("dataOffsetInput").value = dataOffset;
-  }
-  updateGroupingOptionsUI();
+  if (!localStorage.getItem("darkMode")) localStorage.setItem("darkMode", "true");
+  const darkMode = localStorage.getItem("darkMode") === "true";
+  document.body.classList.toggle("dark-mode", darkMode);
+  document.getElementById("darkModeToggle").checked = darkMode;
+  groupingMode = localStorage.getItem("groupingMode") || "0";
+  sortOrder = localStorage.getItem("sortOrder") || "asc";
+  updateSettingsDisplay();
 }
-document.getElementById("darkModeToggle").addEventListener("change", () => {
-  const enabled = document.getElementById("darkModeToggle").checked;
-  document.body.classList.toggle("dark-mode", enabled);
-  saveSettings();
-  updateChartBackground();
-});
-document.querySelectorAll(".grouping-option").forEach(btn => {
-  btn.addEventListener("click", () => { groupingMode = btn.getAttribute("data-value"); updateGroupingOptionsUI(); });
-});
-document.querySelectorAll(".sort-order-btn").forEach(btn => {
-  btn.addEventListener("click", () => { sortOrder = btn.getAttribute("data-order"); saveSettings(); buildTreeFromDisplay(displayTagList); });
-});
-loadSettings();
-function updateChartBackground() {
-  if (chart) {
-    const appDark = document.body.classList.contains("dark-mode");
-    const chartBg = appDark ? "#2e2e2e" : "#ffffff";
-    const textColor = appDark ? "#e0e0e0" : "#000";
-    const legendColor = appDark ? "white" : "#000";
-    chart.update({
-      chart: { backgroundColor: chartBg },
-      title: { style: { color: textColor } },
-      xAxis: { labels: { style: { color: textColor }, format: '{value:%H:%M:%S}' }, lineColor: textColor, tickColor: textColor },
-      yAxis: { labels: { style: { color: textColor } }, title: { style: { color: textColor } }, lineColor: textColor, tickColor: textColor },
-      legend: { itemStyle: { color: legendColor } }
+function fetchTagList() {
+  fetch("/taglist")
+    .then(response => response.json())
+    .then(data => {
+      fullTagList = data;
+      displayTagList = data;
+      buildTreeFromDisplay(data);
+      logStatus("Tag list fetched.");
+    })
+    .catch(err => {
+      console.error("Error fetching tag list:", err);
+      logStatus("Error fetching tag list.");
     });
-  }
 }
+document.addEventListener("DOMContentLoaded", () => {
+  loadSettings();
+  // Initialize flatpickr with default start = today's 00:00 and end = current time
+  flatpickr("#startDate", { 
+    enableTime: true, 
+    time_24hr: true, 
+    dateFormat: "Y-m-d H:i",
+    defaultDate: new Date(new Date().setHours(0,0,0,0))
+  });
+  flatpickr("#endDate", { 
+    enableTime: true, 
+    time_24hr: true, 
+    dateFormat: "Y-m-d H:i",
+    defaultDate: new Date()
+  });
+  fetchTagList();
 
-// ---------- Toggle Settings Panel ----------
-function toggleSettingsPanel() {
-  const panel = document.getElementById("mainOptionsPanel");
-  if (panel.classList.contains("open")) {
-    panel.classList.remove("open");
-    logStatus("Settings panel closed.");
-  } else {
-    panel.classList.add("open");
-    logStatus("Settings panel opened.");
-  }
-}
-document.getElementById("mainOptionsBtn").addEventListener("click", toggleSettingsPanel);
-document.getElementById("mainOptionsCloseBtn").addEventListener("click", toggleSettingsPanel);
-document.getElementById("saveSettingsBtn").addEventListener("click", () => { saveSettings(); toggleSettingsPanel(); });
-
-// ---------- Tag Options Modal ----------
-function openTagOptionsModal() {
-  const modal = document.getElementById("tagOptionsModal");
-  const container = document.getElementById("tagOptionsContainer");
-  container.innerHTML = "";
-  const selTags = Array.from(selectedTags);
-  if (selTags.length === 0)
-    container.innerHTML = "<p>No tags selected.</p>";
-  else {
-    const tagSettings = JSON.parse(localStorage.getItem("tagSettings") || '{"scale_factors":{},"error_values":{},"max_decimal":{}}');
-    selTags.forEach(tag => {
-      const div = document.createElement("div");
-      div.className = "tag-option-row";
-      
-      const label = document.createElement("label");
-      label.textContent = tag;
-      label.className = "tag-col";
-      
-      const scaleInput = document.createElement("input");
-      scaleInput.type = "number";
-      scaleInput.step = "0.01";
-      scaleInput.value = (tagSettings.scale_factors && tagSettings.scale_factors[tag]) ? tagSettings.scale_factors[tag] : 1.0;
-      scaleInput.className = "settings-col";
-      scaleInput.style.width = "60px";
-      
-      const errorInput = document.createElement("input");
-      errorInput.type = "number";
-      errorInput.step = "0.01";
-      errorInput.value = (tagSettings.error_values && tagSettings.error_values[tag]) ? tagSettings.error_values[tag] : "";
-      errorInput.className = "settings-col";
-      errorInput.style.width = "60px";
-      
-      const maxDecInput = document.createElement("input");
-      maxDecInput.type = "number";
-      maxDecInput.step = "1";
-      maxDecInput.value = (tagSettings.max_decimal && tagSettings.max_decimal[tag]) ? tagSettings.max_decimal[tag] : 2;
-      maxDecInput.className = "settings-col";
-      maxDecInput.style.width = "60px";
-      
-      div.dataset.tag = tag;
-      div.dataset.scale = scaleInput.value;
-      div.dataset.error = errorInput.value;
-      div.dataset.maxDec = maxDecInput.value;
-      
-      scaleInput.addEventListener("input", () => { div.dataset.scale = scaleInput.value; });
-      errorInput.addEventListener("input", () => { div.dataset.error = errorInput.value; });
-      maxDecInput.addEventListener("input", () => { div.dataset.maxDec = maxDecInput.value; });
-      
-      div.appendChild(label);
-      div.appendChild(scaleInput);
-      div.appendChild(errorInput);
-      div.appendChild(maxDecInput);
-      
-      container.appendChild(div);
+  // Grouping options event listeners
+  document.querySelectorAll(".grouping-option").forEach(btn => {
+    btn.addEventListener("click", () => {
+      groupingMode = btn.getAttribute("data-value");
+      localStorage.setItem("groupingMode", groupingMode);
+      document.querySelectorAll(".grouping-option").forEach(b => b.classList.remove("selected"));
+      btn.classList.add("selected");
+      buildTreeFromDisplay(displayTagList);
     });
-  }
-  modal.style.display = "block";
-}
+  });
 
-function closeTagOptionsModal() {
-  document.getElementById("tagOptionsModal").style.display = "none";
-}
-document.getElementById("tagOptionsGear").addEventListener("click", openTagOptionsModal);
-document.getElementById("tagOptionsClose").addEventListener("click", closeTagOptionsModal);
-document.getElementById("saveTagOptionsBtn").addEventListener("click", () => {
-  const container = document.getElementById("tagOptionsContainer");
-  const rows = container.getElementsByClassName("tag-option-row");
-  const newSettings = { scale_factors: {}, error_values: {}, max_decimal: {} };
-  for (let row of rows) {
-    const tag = row.dataset.tag;
-    let scaleVal = parseFloat(row.dataset.scale);
-    let errorVal = row.dataset.error.trim() === "" ? null : parseFloat(row.dataset.error);
-    let maxDec = parseInt(row.dataset.maxDec, 10);
-    newSettings.scale_factors[tag] = isNaN(scaleVal) ? 1.0 : scaleVal;
-    newSettings.error_values[tag] = (errorVal === null || isNaN(errorVal)) ? null : errorVal;
-    newSettings.max_decimal[tag] = isNaN(maxDec) ? 2 : maxDec;
-  }
-  localStorage.setItem("tagSettings", JSON.stringify(newSettings));
-  logStatus("Tag options saved.");
-  closeTagOptionsModal();
-  if (Object.keys(rawSeriesData).length > 0) {
-    Promise.all(Array.from(selectedTags).map(async tag => {
-      let stored = await getSeriesData(tag);
-      return { name: tag, data: stored };
-    })).then(seriesArr => {
-      lastSeriesData = fillSeriesData(seriesArr);
-      renderDataTable(lastSeriesData);
-      if (chart) {
-        const currentExtremes = chart.xAxis[0].getExtremes();
-        while (chart.series.length > lastSeriesData.length) {
-          chart.series[chart.series.length - 1].remove(false);
-        }
-        lastSeriesData.forEach((s, i) => {
-          if (chart.series[i]) {
-            chart.series[i].setData(s.data, false);
-            chart.series[i].update({ name: s.name }, false);
-          } else {
-            chart.addSeries(s, false);
-          }
-        });
-        chart.redraw();
-        chart.xAxis[0].setExtremes(currentExtremes.min, currentExtremes.max, false);
-        logStatus("Chart updated with new tag settings.");
-      }
+  // Sort order buttons event listeners
+  document.querySelectorAll(".sort-order-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      sortOrder = btn.getAttribute("data-order");
+      localStorage.setItem("sortOrder", sortOrder);
+      document.querySelectorAll(".sort-order-btn").forEach(b => b.classList.remove("selected"));
+      btn.classList.add("selected");
+      buildTreeFromDisplay(displayTagList);
     });
-  } else {
-    onGraph(false);
-  }
-});
-
-// ---------- Auto Refresh Controls ----------
-function isLiveData() {
-  const endInput = document.getElementById("endDate").value;
-  const endDate = new Date(endInput);
-  return (new Date() - endDate) < 3600000;
-}
-
-function startAutoRefresh() {
-  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
-  autoRefreshTimer = setInterval(() => {
-    if (isLiveData()) { onGraph(true); }
-    else {
-      document.getElementById("autoRefreshToggle").checked = false;
-      clearInterval(autoRefreshTimer);
-      autoRefreshTimer = null;
-      logStatus("Auto refresh disabled (selected end time is not recent).");
-    }
-  }, autoRefreshInterval);
-}
-
-function stopAutoRefresh() {
-  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
-}
-
-document.querySelectorAll(".polling-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    autoRefreshInterval = parseInt(btn.getAttribute("data-interval"));
-    document.querySelectorAll(".polling-btn").forEach(b => {
-      b.classList.remove("selected");
-      b.style.backgroundColor = "";
-      b.style.color = "";
-    });
-    btn.classList.add("selected");
-    if (document.getElementById("autoRefreshToggle").checked) startAutoRefresh();
   });
 });
 
-document.getElementById("autoRefreshToggle").addEventListener("change", function () {
-  if (this.checked && isLiveData()) { startAutoRefresh(); }
-  else { stopAutoRefresh(); }
-});
-
-// ---------- Day Lines Toggle (Thicker Line) ----------
-function updateDayPlotLines() {
-  const dayLinesToggle = document.getElementById("dayLinesToggle");
-  if (!chart) return;
-  if (dayLinesToggle && dayLinesToggle.checked) {
-    const extremes = chart.xAxis[0].getExtremes();
-    const xMin = extremes.min, xMax = extremes.max;
-    let plotLines = [];
-    let current = new Date(xMin);
-    current.setHours(0, 0, 0, 0);
-    if (current.getTime() < xMin) current.setDate(current.getDate() + 1);
-    while (current.getTime() <= xMax) {
-      plotLines.push({
-        color: document.body.classList.contains("dark-mode") ? "#ffffff" : "#000000",
-        dashStyle: "Dot",
-        value: current.getTime(),
-        width: 2,
-        zIndex: 3
-      });
-      current.setDate(current.getDate() + 1);
-    }
-    chart.xAxis[0].update({ plotLines: plotLines }, false);
-    chart.redraw();
-  } else if (chart) {
-    chart.xAxis[0].update({ plotLines: [] }, false);
-    chart.redraw();
-  }
-}
-if (document.getElementById("dayLinesToggle")) {
-  document.getElementById("dayLinesToggle").addEventListener("change", updateDayPlotLines);
-}
-
-// ---------- Helper: Get Visible (Zoomed) Data ----------
-function getVisibleSeriesData() {
-  if (!chart || !chart.xAxis || typeof chart.xAxis[0].min !== "number" || typeof chart.xAxis[0].max !== "number") {
-    return lastSeriesData;
-  }
-  const min = chart.xAxis[0].min;
-  const max = chart.xAxis[0].max;
-  return lastSeriesData.map(series => ({
-    name: series.name,
-    data: series.data.filter(point => point[0] >= min && point[0] <= max)
-  }));
-}
-
-// ---------- Graphing, Data Table, and Auto Refresh ----------
-document.getElementById("graphBtn").addEventListener("click", () => { onGraph(false); stopAutoRefresh(); });
-async function onGraph(isAuto = false) {
+// ------------------ Data Fetching & Chart Rendering ------------------
+async function fetchCompleteData() {
   if (selectedTags.size === 0) {
-    logStatus("No tags selected for graphing.");
+    alert("Please select at least one tag before graphing.");
     return;
   }
-  logStatus("Fetching data...");
+  logStatus("Fetching complete data...");
   const startInput = document.getElementById("startDate").value;
   const endInput = document.getElementById("endDate").value;
   const startDate = new Date(startInput);
@@ -700,391 +449,154 @@ async function onGraph(isAuto = false) {
     logStatus("Invalid start or end date/time.");
     return;
   }
-  let baseStartUnix = Math.floor(startDate.getTime() / 1000);
+  const baseStartUnix = Math.floor(startDate.getTime() / 1000);
   const endUnix = Math.floor(endDate.getTime() / 1000);
-  const pollingRateSec = autoRefreshInterval / 1000;
-  const effectiveEndUnix = isAuto
-    ? Math.floor(Date.now() / 1000) + globalEndMultiplier * pollingRateSec
-    : endUnix;
-  
-  const tagsArray = Array.from(selectedTags);
-  
-  const fetchPromises = tagsArray.map(tag => {
-    let qs = baseStartUnix;
-    if (isAuto) {
-      if (queryStartTimes[tag] === undefined) {
-        queryStartTimes[tag] = baseStartUnix;
-      }
-      qs = queryStartTimes[tag];
-    }
-    return fetch(`/values?tag=${encodeURIComponent(tag)}&startDateUnixSeconds=${qs}&endDateUnixSeconds=${effectiveEndUnix}`)
-      .then(response => {
-        if (!response.ok) {
-          console.error(`HTTP error ${response.status} for tag ${tag}`);
-          return { tag, data: [], qs };
-        }
-        return response.json().then(data => ({ tag, data, qs }));
-      })
-      .catch(err => {
-        console.error(`Fetch error for tag ${tag}:`, err);
-        return { tag, data: [], qs };
-      });
-  });
-  
+  const tags = Array.from(selectedTags).join(",");
+  const url = `/complete_data?startDateUnixSeconds=${baseStartUnix}&endDateUnixSeconds=${endUnix}` +
+              (tags ? `&tags=${encodeURIComponent(tags)}` : "");
   try {
-    const results = await Promise.all(fetchPromises);
-    let totalNewData = 0;
-    const seriesData = results.map(result => {
-      const dataPoints = result.data.map(point => [new Date(point.Date).getTime(), parseFloat(point.Value)]);
-      totalNewData += dataPoints.length;
-      if (isAuto) {
-        if (dataPoints.length > 0) {
-          const lastTimestamp = dataPoints[dataPoints.length - 1][0];
-          queryStartTimes[result.tag] = Math.floor(lastTimestamp / 1000) + pollingRateSec;
-        } else {
-          queryStartTimes[result.tag] = result.qs + pollingRateSec;
-        }
-      }
-      return { name: result.tag, data: dataPoints };
-    });
-    if (isAuto && rawSeriesData && Object.keys(rawSeriesData).length > 0 && chart) {
-      seriesData.forEach((newSeries, i) => {
-        if (!rawSeriesData[i]) rawSeriesData[i] = newSeries;
-        else {
-          newSeries.data.forEach(pt => {
-            const lastRaw = rawSeriesData[i].data[rawSeriesData[i].data.length - 1];
-            if (!lastRaw || lastRaw[0] < pt[0]) rawSeriesData[i].data.push(pt);
-          });
-        }
-      });
-    } else {
-      rawSeriesData = deepClone(seriesData);
-    }
-    lastSeriesData = fillSeriesData(rawSeriesData);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("HTTP error " + response.status);
+    const completeData = await response.json();
+    lastProcessedData = completeData.processed_values;
+    buildTreeFromDisplay(completeData.taglist);
+    displayTagList = completeData.taglist;
+    renderDataTable(getVisibleSeriesData());
     if (chart) {
-      if (isAuto) {
-        const currentExtremes = chart.xAxis[0].getExtremes();
-        const globalMax = Math.max(...lastSeriesData.map(s => (s.data.length ? s.data[s.data.length - 1][0] : 0)));
-        chart.xAxis[0].setExtremes(currentExtremes.min, globalMax, false);
-        lastSeriesData.forEach((s, i) => {
-          if (chart.series[i]) {
-            chart.series[i].setData(s.data, false);
-          }
-        });
-        chart.redraw();
-      } else {
-        while (chart.series.length > lastSeriesData.length) {
-          chart.series[chart.series.length - 1].remove(false);
-        }
-        lastSeriesData.forEach((s, i) => {
-          if (chart.series[i]) {
-            chart.series[i].setData(s.data, false);
-            chart.series[i].update({ name: s.name }, false);
-          } else {
-            chart.addSeries(s, false);
-          }
-        });
-        chart.redraw();
+      while (chart.series.length > lastProcessedData.length) {
+        chart.series[chart.series.length - 1].remove(false);
       }
+      lastProcessedData.forEach((s, i) => {
+        if (chart.series[i]) {
+          chart.series[i].setData(s.data, false);
+          chart.series[i].update({ name: s.name }, false);
+        } else {
+          chart.addSeries(s, false);
+        }
+      });
+      chart.redraw();
     } else {
-      const appDark = document.body.classList.contains("dark-mode");
-      const chartBg = appDark ? "#2e2e2e" : "#ffffff";
-      const textColor = appDark ? "#e0e0e0" : "#000";
-      const legendColor = appDark ? "white" : "#000";
-      let chartConfig = {
-        chart: {
-          type: "line",
-          zoomType: "xy",
-          zooming: { enabled: false },
-          panning: { enabled: true, type: "xy" },
-          backgroundColor: chartBg,
-          events: {
-            load: function () {
-              const chartInstance = this;
-              document.addEventListener("keydown", function (e) {
-                if (e.key === "Shift") {
-                  chartInstance.update({ chart: { zooming: { enabled: true }, panning: { enabled: false } } });
-                }
-              });
-              document.addEventListener("keyup", function (e) {
-                if (e.key === "Shift") {
-                  chartInstance.update({ chart: { zooming: { enabled: false }, panning: { enabled: true, type: "xy" } } });
-                }
-              });
-            }
-          }
-        },
-        rangeSelector: { enabled: false },
-        navigator: { enabled: true },
-        scrollbar: { enabled: true },
-        title: { text: "Graph", style: { color: textColor } },
-        xAxis: {
-          type: "datetime",
-          labels: { style: { color: textColor }, format: '{value:%H:%M:%S}' },
-          lineColor: textColor,
-          tickColor: textColor
-        },
-        yAxis: {
-          title: { text: "Value", style: { color: textColor } },
-          labels: { style: { color: textColor } },
-          lineColor: textColor,
-          tickColor: textColor
-        },
-        legend: { enabled: true, itemStyle: { color: legendColor } },
-        tooltip: { shared: true, crosshairs: true, style: { color: textColor }, backgroundColor: appDark ? "#333333" : "#ffffff" },
-        plotOptions: { series: { allowPointSelect: true, marker: { enabled: false } } },
-        series: lastSeriesData,
-        credits: { enabled: false }
-      };
-      chart = Highcharts.stockChart("chartContainer", chartConfig);
+      renderChart(lastProcessedData);
     }
-    renderDataTable(lastSeriesData);
-    logStatus("Data fetched successfully.");
-    updateDayPlotLines();
-    if (document.getElementById("autoRefreshToggle").checked && isLiveData())
-      startAutoRefresh();
-    else
-      stopAutoRefresh();
-    logStatus("Graph rendered for selected tags.");
+    logStatus("Data fetched and graph rendered.");
   } catch (error) {
-    console.error("Error fetching values:", error);
-    logStatus("Error fetching values for graph: " + error.message);
+    console.error("Error fetching complete data:", error);
+    logStatus("Error fetching data: " + error.message);
   }
 }
 
-// ---------- Render Data Table (with Multi-Level Header) ----------
-function renderDataTable(seriesData) {
-  const container = document.getElementById("dataTableContainer");
-  container.innerHTML = "";
-  const visibleSeries = getVisibleSeriesData();
-  const multiHeader = generateMultiLevelHeader(visibleSeries.map(s => s.name));
-  const table = document.createElement("table");
-  table.style.width = "100%";
-  table.style.borderCollapse = "collapse";
-  const thead = document.createElement("thead");
-  const headerRow1 = document.createElement("tr");
-  const tsTh = document.createElement("th");
-  tsTh.textContent = "Timestamp";
-  tsTh.rowSpan = 3;
-  tsTh.style.border = "1px solid #ccc";
-  tsTh.style.padding = "5px";
-  tsTh.style.textAlign = "center";
-  headerRow1.appendChild(tsTh);
-  multiHeader[0].forEach(cell => {
-    const th = document.createElement("th");
-    th.textContent = cell.content;
-    th.colSpan = cell.colSpan;
-    th.style.border = "1px solid #ccc";
-    th.style.padding = "5px";
-    th.style.textAlign = "center";
-    th.style.borderBottom = "2px solid #000";
-    headerRow1.appendChild(th);
-  });
-  thead.appendChild(headerRow1);
-  const headerRow2 = document.createElement("tr");
-  multiHeader[1].forEach(cell => {
-    const th = document.createElement("th");
-    th.textContent = cell.content;
-    th.colSpan = cell.colSpan;
-    th.style.border = "1px solid #ccc";
-    th.style.padding = "5px";
-    th.style.textAlign = "center";
-    headerRow2.appendChild(th);
-  });
-  thead.appendChild(headerRow2);
-  const headerRow3 = document.createElement("tr");
-  multiHeader[2].forEach(cell => {
-    const th = document.createElement("th");
-    th.textContent = cell.content;
-    th.style.border = "1px solid #ccc";
-    th.style.padding = "5px";
-    th.style.textAlign = "center";
-    th.style.borderBottom = "2px solid #000";
-    headerRow3.appendChild(th);
-  });
-  thead.appendChild(headerRow3);
-  table.appendChild(thead);
-  
-  const mergedRows = mergeSeriesData(seriesData);
-  const dataRows = mergedRows.slice(1);
-  const tbody = document.createElement("tbody");
-  dataRows.forEach(rowData => {
-    const tr = document.createElement("tr");
-    rowData.forEach(cellText => {
-      const td = document.createElement("td");
-      td.textContent = cellText;
-      td.style.border = "1px solid #ccc";
-      td.style.padding = "5px";
-      td.style.whiteSpace = "nowrap";
-      td.style.textAlign = "center";
-      tr.appendChild(td);
-    });
-    tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-  container.appendChild(table);
+function renderChart(processedData) {
+  const isDark = document.body.classList.contains("dark-mode");
+  const textColor = isDark ? "#e0e0e0" : "#000000";
+  const bgColor = isDark ? "#2e2e2e" : "#ffffff";
+  const chartConfig = {
+    chart: {
+      type: "line",
+      zoomType: "xy",
+      panning: { enabled: true, type: "xy" },
+      backgroundColor: bgColor
+    },
+    rangeSelector: { enabled: false },
+    navigator: { enabled: true },
+    scrollbar: { enabled: true },
+    title: { text: "Graph", style: { color: textColor } },
+    xAxis: {
+      type: "datetime",
+      labels: { style: { color: textColor }, format: '{value:%H:%M:%S}' },
+      lineColor: textColor,
+      tickColor: textColor,
+      events: { afterSetExtremes: function(){ renderDataTable(getVisibleSeriesData()); } }
+    },
+    yAxis: {
+      title: { text: "Value", style: { color: textColor } },
+      labels: { style: { color: textColor } },
+      lineColor: textColor,
+      tickColor: textColor
+    },
+    legend: { enabled: true, itemStyle: { color: textColor } },
+    tooltip: { shared: true, crosshairs: true, style: { color: textColor }, backgroundColor: bgColor },
+    plotOptions: { series: { allowPointSelect: true, marker: { enabled: false } } },
+    series: processedData,
+    credits: { enabled: false }
+  };
+  chart = Highcharts.stockChart("chartContainer", chartConfig);
 }
 
-function mergeSeriesData(seriesData, xMin, xMax) {
-  const timestampSet = new Set();
-  seriesData.forEach(series => {
-    series.data.forEach(point => {
-      if (xMin === undefined || xMax === undefined || (point[0] >= xMin && point[0] <= xMax)) {
-        timestampSet.add(point[0]);
-      }
-    });
-  });
-  const timestamps = Array.from(timestampSet).sort((a, b) => a - b);
-  const header = ["Timestamp", ...seriesData.map(s => s.name)];
-  const rows = [header];
-  timestamps.forEach(ts => {
-    const row = [formatTimestamp(ts)];
-    seriesData.forEach(series => {
-      const found = series.data.find(p => p[0] === ts);
-      row.push(found ? found[1] : "");
-    });
-    rows.push(row);
-  });
-  return rows;
-}
-
-function formatTimestamp(ts) {
-  const date = new Date(ts);
-  const dd = String(date.getDate()).padStart(2, "0");
-  const mm = String(date.getMonth() + 1).padStart(2, "0");
-  const yyyy = date.getFullYear();
-  const hh = String(date.getHours()).padStart(2, "0");
-  const min = String(date.getMinutes()).padStart(2, "0");
-  const ss = String(date.getSeconds()).padStart(2, "0");
-  return `${dd}/${mm}/${yyyy} ${hh}:${min}:${ss}`;
-}
-
-function rowsToCSV(rows) {
-  return rows.map(row => row.join(",")).join("\n");
-}
-
-function fillSeriesData(seriesData) {
-  seriesData.forEach(series => {
-    let newData = [];
-    let lastValue = null;
-    series.data.sort((a, b) => a[0] - b[0]);
-    series.data.forEach(pt => {
-      if (pt[1] !== null && pt[1] !== undefined && pt[1] !== "") {
-        lastValue = pt[1];
-      }
-      newData.push([pt[0], lastValue]);
-    });
-    series.data = newData;
-  });
-  const allTimestamps = new Set();
-  seriesData.forEach(series => {
-    series.data.forEach(pt => allTimestamps.add(pt[0]));
-  });
-  const timestamps = Array.from(allTimestamps).sort((a, b) => a - b);
-  seriesData.forEach(series => {
-    const dataMap = new Map(series.data);
-    let newData = [];
-    let lastVal = null;
-    timestamps.forEach(ts => {
-      if (dataMap.has(ts)) {
-        lastVal = dataMap.get(ts);
-        newData.push([ts, lastVal]);
-      } else {
-        newData.push([ts, lastVal]);
-      }
-    });
-    series.data = newData;
-  });
-  return seriesData;
-}
-
-// ---------- Excel Export (XLSX) ----------
-document.getElementById("exportDataBtn").addEventListener("click", onExportData);
-async function onExportData() {
+// ------------------ Auto Refresh / Incremental Data ------------------
+async function fetchIncrementalData() {
+  if (selectedTags.size === 0) return;
+  const currentTimeUnix = Math.floor(Date.now() / 1000);
   try {
-    logStatus("Exporting data...");
-    if (lastSeriesData.length === 0) {
-      logStatus("No data available, fetching data first...");
-      await onGraph(false);
-      if (lastSeriesData.length === 0) {
-        logStatus("Failed to fetch data for export.");
-        return;
-      }
-    }
-    
-    const visibleSeries = getVisibleSeriesData();
-    const multiHeader = generateMultiLevelHeader(visibleSeries.map(s => s.name));
-    
-    let expRow1 = ["Timestamp"];
-    multiHeader[0].forEach(cell => expRow1.push(...Array(cell.colSpan).fill(cell.content)));
-    
-    let expRow2 = [""];
-    multiHeader[1].forEach(cell => expRow2.push(...Array(cell.colSpan).fill(cell.content)));
-    
-    let expRow3 = [""];
-    multiHeader[2].forEach(cell => expRow3.push(cell.content));
-    
-    const dataRows = mergeSeriesData(visibleSeries).slice(1);
-    const combined = [expRow1, expRow2, expRow3].concat(dataRows);
-    
-    const ws = XLSX.utils.aoa_to_sheet(combined);
-    
-    ws["!merges"] = ws["!merges"] || [];
-    for (let r = 0; r < 3; r++) {
-      let startCol = 1;
-      while (startCol < expRow1.length) {
-        let cellValue = combined[r][startCol];
-        let endCol = startCol;
-        while (endCol + 1 < expRow1.length && combined[r][endCol + 1] === cellValue && cellValue !== "") {
-          endCol++;
-        }
-        if (endCol > startCol) {
-          ws["!merges"].push({ s: { r, c: startCol }, e: { r, c: endCol } });
-        }
-        startCol = endCol + 1;
-      }
-    }
-    
-    const colWidths = combined[0].map((_, c) => {
-      let maxLength = 10;
-      for (let r = 0; r < combined.length; r++) {
-        if (combined[r][c] && combined[r][c].toString().length > maxLength) {
-          maxLength = combined[r][c].toString().length;
-        }
-      }
-      return { wch: maxLength + 2 };
+    const response = await fetch("/incremental_data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tags: Array.from(selectedTags), endDateUnixSeconds: currentTimeUnix })
     });
-    ws["!cols"] = colWidths;
-    
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Data");
-    const fileName = generateFileName() + ".xlsx";
-    XLSX.writeFile(wb, fileName, { bookType: "xlsx" });
-    
-    logStatus("Excel file exported successfully.");
-  } catch (ex) {
-    console.error("Error exporting data:", ex);
-    logStatus("Error exporting data: " + ex.message);
+    if (!response.ok) throw new Error(response.statusText);
+    const data = await response.json();
+    lastProcessedData = data.processed_values;
+    if (chart) {
+      while (chart.series.length > lastProcessedData.length) {
+        chart.series[chart.series.length - 1].remove(false);
+      }
+      lastProcessedData.forEach((s, i) => {
+        if (chart.series[i]) {
+          chart.series[i].setData(s.data, false);
+          chart.series[i].update({ name: s.name }, false);
+        } else {
+          chart.addSeries(s, false);
+        }
+      });
+      chart.redraw();
+    } else {
+      renderChart(lastProcessedData);
+    }
+    renderDataTable(getVisibleSeriesData());
+    logStatus("Auto-refresh: Data updated.");
+  } catch (err) {
+    logStatus("Auto-refresh error: " + err.message);
   }
 }
 
-// ---------- PDF Report Generation (Cover Page + Graph + Data Table) ----------
+function startAutoRefresh() {
+  clearInterval(autoRefreshTimer);
+  autoRefreshTimer = setInterval(() => {
+    if (document.getElementById("autoRefreshToggle").checked && document.visibilityState === "visible") {
+      fetchIncrementalData();
+    }
+  }, autoRefreshInterval);
+  logStatus("Auto-refresh started with interval " + autoRefreshInterval + "ms.");
+}
+
+// ------------------ Report Generation & Export ------------------
 document.getElementById("generateReportBtn").addEventListener("click", onGenerateReport);
 async function onGenerateReport() {
   try {
-    logStatus("Generating report...");
-    if (lastSeriesData.length === 0) {
-      logStatus("No data available for report.");
+    logStatus("Generating PDF report...");
+    if (selectedTags.size === 0) {
+      alert("Please select at least one tag before generating a report.");
       return;
     }
+    if (!lastProcessedData || lastProcessedData.length === 0) {
+      logStatus("No data available. Fetching complete data first...");
+      await fetchCompleteData();
+      if (!lastProcessedData || lastProcessedData.length === 0) {
+        logStatus("Failed to fetch data for report.");
+        return;
+      }
+    }
     if (!chart) {
-      logStatus("Chart not available for report.");
+      alert("Chart is not available for report generation.");
       return;
     }
     if (typeof chart.getSVG !== "function") {
-      logStatus("Error: chart.getSVG is not available. Ensure Highcharts Exporting module is loaded.");
+      alert("Chart export functionality not available.");
       return;
     }
+    const visibleSeries = getVisibleSeriesData();
+    const xExtremes = chart.xAxis[0].getExtremes();
+    const mergedRows = mergeSeriesData(visibleSeries, xExtremes.min, xExtremes.max);
+    const multiHeaderRows = generateMultiLevelHeader(visibleSeries.map(s => s.name));
     
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({
@@ -1096,13 +608,9 @@ async function onGenerateReport() {
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
     
-    // Convert chart SVG to PNG using previous scaling (fill page minus margins)
+    // Convert chart SVG to PNG
     const svg = chart.getSVG({
-      chart: { width: chart.chartWidth, height: chart.chartHeight, backgroundColor: "#ffffff" },
-      title: { style: { color: "#000" } },
-      xAxis: { labels: { style: { color: "#000" } }, title: { style: { color: "#000" } } },
-      yAxis: { labels: { style: { color: "#000" } }, title: { style: { color: "#000" } } },
-      legend: { itemStyle: { color: "#000" } }
+      chart: { width: chart.chartWidth, height: chart.chartHeight, backgroundColor: "#ffffff" }
     });
     const canvas = document.createElement("canvas");
     canvas.width = chart.chartWidth || 800;
@@ -1117,82 +625,259 @@ async function onGenerateReport() {
           ctx.drawImage(img, 0, 0);
           URL.revokeObjectURL(url);
           resolve();
-        } catch (err) {
-          reject(err);
-        }
+        } catch (err) { reject(err); }
       };
-      img.onerror = function (err) {
-        reject(err);
-      };
+      img.onerror = function (err) { reject(err); };
       img.src = url;
     });
     const chartImgData = canvas.toDataURL("image/png");
     
     // ---- Cover Page ----
-    loadLogo(function (logoDataUrl) {
-      if (logoDataUrl) {
-        // Insert logo at top left with dimensions 90 x 30
-        doc.addImage(logoDataUrl, "PNG", margin, margin, 90, 30);
-      }
-      doc.setFontSize(18);
-      doc.text("Data Extraction Report", pageWidth / 2, 50, { align: "center" });
-      doc.setFontSize(12);
-      const fhNumber = document.getElementById("bargeNumberInput").value || "0000";
-      const bargeName = document.getElementById("bargeNameInput").value || "UnknownBarge";
-      doc.text(`FH ${fhNumber} - ${bargeName}`, pageWidth / 2, 60, { align: "center" });
-      const startDateStr = document.getElementById("startDate").value;
-      const endDateStr = document.getElementById("endDate").value;
-      doc.text(`${startDateStr} - ${endDateStr}`, pageWidth / 2, 70, { align: "center" });
-      
-      // Table of Contents
-      doc.setFontSize(14);
-      doc.text("Table of Contents", pageWidth / 2, 90, { align: "center" });
-      doc.setFontSize(12);
-      function formatTOCLine(title, pageNum) {
-        const maxLength = 40;
-        let line = title;
-        while (line.length < maxLength) { line += "."; }
-        return line + " " + pageNum;
-      }
-      doc.text(formatTOCLine("Graph", "2"), pageWidth / 2, 100, { align: "center" });
-      doc.text(formatTOCLine("Data Table", "3"), pageWidth / 2, 110, { align: "center" });
-      
-      // ---- Graph Page ----
-      doc.addPage();
-      // Insert graph image scaled to fill page minus 5 mm margins on all sides
-      doc.addImage(chartImgData, "PNG", margin, margin * 5, pageWidth - 2 * margin, pageHeight - 10 * margin);
-      
-      // ---- Data Table Page ----
-      doc.addPage();
-      doc.setFontSize(16);
-      doc.text("Data Table", pageWidth / 2, 20, { align: "center" });
-      const visibleSeries = getVisibleSeriesData();
-      const xMin = chart.xAxis[0].min;
-      const xMax = chart.xAxis[0].max;
-      const mergedRows = mergeSeriesData(visibleSeries, xMin, xMax);
-      const seriesHeaders = visibleSeries.map(s => s.name);
-      const multiHeaderRows = generateMultiLevelHeader(seriesHeaders);
-      const header = [
-        [{ content: "Timestamp", rowSpan: 3, styles: { halign: "center", valign: "middle" } }, ...multiHeaderRows[0]],
-        multiHeaderRows[1],
-        multiHeaderRows[2]
-      ];
-      // Data table with 5 mm margins on all sides
-      doc.autoTable({
-        startY: 30,
-        head: header,
-        body: mergedRows.slice(1),
-        theme: "grid",
-        styles: { fontSize: 8, cellPadding: 2, halign: "center", valign: "middle" },
-        margin: { top: margin, bottom: margin, left: margin, right: margin }
+    await new Promise((resolve) => {
+      loadLogo(function (logoDataUrl) {
+        if (logoDataUrl) {
+          doc.addImage(logoDataUrl, "PNG", margin, margin, 90, 30);
+        }
+        doc.setFontSize(18);
+        doc.text("Data Extraction Report", pageWidth / 2, 50, { align: "center" });
+        doc.setFontSize(12);
+        const fhNumber = document.getElementById("bargeNumberInput").value || "0000";
+        const bargeName = document.getElementById("bargeNameInput").value || "UnknownBarge";
+        doc.text(`FH ${fhNumber} - ${bargeName}`, pageWidth / 2, 60, { align: "center" });
+        const startDateStr = document.getElementById("startDate").value;
+        const endDateStr = document.getElementById("endDate").value;
+        doc.text(`${startDateStr} - ${endDateStr}`, pageWidth / 2, 70, { align: "center" });
+        doc.setFontSize(14);
+        doc.text("Table of Contents", pageWidth / 2, 90, { align: "center" });
+        doc.setFontSize(12);
+        function formatTOCLine(title, pageNum) {
+          const maxLength = 40;
+          let line = title;
+          while (line.length < maxLength) { line += "."; }
+          return line + " " + pageNum;
+        }
+        doc.text(formatTOCLine("Graph", "2"), pageWidth / 2, 100, { align: "center" });
+        doc.text(formatTOCLine("Data Table", "3"), pageWidth / 2, 110, { align: "center" });
+        resolve();
       });
-      
-      const fileName = generateFileName() + ".pdf";
-      doc.save(fileName);
-      logStatus("PDF report generated and downloaded.");
     });
+    
+    // ---- Graph Page ----
+    doc.addPage();
+    doc.addImage(chartImgData, "PNG", margin, 50, pageWidth - 2 * margin, pageHeight - 100);
+    
+    // ---- Data Table Page ----
+    doc.addPage();
+    doc.setFontSize(16);
+    doc.text("Data Table", pageWidth / 2, 20, { align: "center" });
+    const header = [
+      [{ content: "Timestamp", rowSpan: 3, styles: { halign: "center", valign: "middle" } }, ...multiHeaderRows[0].map(cell => cell.content)],
+      multiHeaderRows[1].map(cell => cell.content),
+      multiHeaderRows[2].map(cell => cell.content)
+    ];
+    doc.autoTable({
+      startY: 30,
+      head: header,
+      body: mergedRows.slice(1),
+      theme: "grid",
+      styles: { fontSize: 8, cellPadding: 2, halign: "center", valign: "middle" },
+      margin: { top: margin, bottom: margin, left: margin, right: margin }
+    });
+    
+    const fileName = generateFileName() + ".pdf";
+    doc.save(fileName);
+    logStatus("PDF report generated and downloaded.");
   } catch (error) {
     console.error("Error generating report:", error);
     logStatus("Error generating PDF report: " + error.message);
   }
 }
+
+// ------------------ Export Data (using server endpoint) ------------------
+document.getElementById("exportDataBtn").addEventListener("click", async () => {
+  if (selectedTags.size === 0) {
+    alert("Please select at least one tag before exporting data.");
+    return;
+  }
+  const startInput = document.getElementById("startDate").value;
+  const endInput = document.getElementById("endDate").value;
+  const startDate = new Date(startInput);
+  const endDate = new Date(endInput);
+  if (isNaN(startDate) || isNaN(endDate)) {
+    logStatus("Invalid date/time for export.");
+    return;
+  }
+  const startUnix = Math.floor(startDate.getTime() / 1000);
+  const endUnix = Math.floor(endDate.getTime() / 1000);
+  const tags = Array.from(selectedTags).join(",");
+  const url = `/export_excel?startDateUnixSeconds=${startUnix}&endDateUnixSeconds=${endUnix}` +
+              (tags ? `&tags=${encodeURIComponent(tags)}` : "");
+  logStatus("Exporting data...");
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+    if (data.status) {
+      logStatus(data.status + ": " + data.filepath);
+    } else {
+      logStatus("Export failed.");
+    }
+  } catch (err) {
+    logStatus("Export error: " + err.message);
+  }
+});
+
+// ------------------ UI Event Listeners ------------------
+document.getElementById("darkModeToggle").addEventListener("change", function(){
+  const enabled = this.checked;
+  localStorage.setItem("darkMode", enabled);
+  document.body.classList.toggle("dark-mode", enabled);
+});
+document.getElementById("graphBtn").addEventListener("click", () => {
+  fetchCompleteData();
+  clearInterval(autoRefreshTimer);
+});
+document.getElementById("selectAllBtn").addEventListener("click", () => {
+  displayTagList.forEach(item => selectedTags.add(item.Tag ? item.Tag : item));
+  updateSelectionSummary();
+  buildTreeFromDisplay(displayTagList);
+});
+document.getElementById("deselectAllBtn").addEventListener("click", () => {
+  displayTagList.forEach(item => selectedTags.delete(item.Tag ? item.Tag : item));
+  updateSelectionSummary();
+  buildTreeFromDisplay(displayTagList);
+});
+document.getElementById("tagFilter").addEventListener("input", (e) => {
+  const filter = e.target.value.toLowerCase();
+  const filtered = fullTagList.filter(item => {
+    const tagName = item.Tag ? item.Tag : item;
+    return tagName.toLowerCase().includes(filter);
+  });
+  displayTagList = filtered;
+  buildTreeFromDisplay(filtered);
+});
+document.getElementById("refreshTagsBtn").addEventListener("click", () => { fetchTagList(); });
+
+// Settings Panel Toggle
+function toggleSettingsPanel() {
+  const panel = document.getElementById("mainOptionsPanel");
+  panel.classList.toggle("open");
+  logStatus(panel.classList.contains("open") ? "Settings panel opened." : "Settings panel closed.");
+}
+document.getElementById("mainOptionsBtn").addEventListener("click", toggleSettingsPanel);
+document.getElementById("mainOptionsCloseBtn").addEventListener("click", toggleSettingsPanel);
+document.getElementById("saveSettingsBtn").addEventListener("click", () => {
+  const newOffset = parseInt(document.getElementById("dataOffsetInput").value) || 1;
+  const bargeName = document.getElementById("bargeNameInput").value || "UnknownBarge";
+  const bargeNumber = document.getElementById("bargeNumberInput").value || "0000";
+  const settingsPayload = { offset: newOffset, bargeName: bargeName, bargeNumber: bargeNumber };
+  fetch("/update_settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settingsPayload)
+  }).then(() => {
+    document.body.classList.toggle("dark-mode", localStorage.getItem("darkMode") === "true");
+    toggleSettingsPanel();
+    logStatus("Global settings updated.");
+  }).catch(err => console.error("Error updating global settings:", err));
+});
+
+// Tag Options Modal
+document.getElementById("tagOptionsGear").addEventListener("click", () => {
+  const modal = document.getElementById("tagOptionsModal");
+  const container = document.getElementById("tagOptionsContainer");
+  container.innerHTML = "";
+  const selTags = Array.from(selectedTags);
+  if (selTags.length === 0)
+    container.innerHTML = "<p>No tags selected.</p>";
+  else {
+    const tagSettings = JSON.parse(localStorage.getItem("tagSettings") || '{"scale_factors":{},"error_values":{},"max_decimal":{}}');
+    selTags.forEach(tag => {
+      const div = document.createElement("div");
+      div.className = "tag-option-row";
+      const label = document.createElement("label");
+      label.textContent = tag;
+      label.className = "tag-col";
+      const scaleInput = document.createElement("input");
+      scaleInput.type = "number";
+      scaleInput.step = "0.01";
+      scaleInput.value = tagSettings.scale_factors[tag] || 1.0;
+      scaleInput.className = "settings-col";
+      scaleInput.style.width = "60px";
+      const errorInput = document.createElement("input");
+      errorInput.type = "number";
+      errorInput.step = "0.01";
+      errorInput.value = tagSettings.error_values[tag] || "";
+      errorInput.className = "settings-col";
+      errorInput.style.width = "60px";
+      const maxDecInput = document.createElement("input");
+      maxDecInput.type = "number";
+      maxDecInput.step = "1";
+      maxDecInput.value = tagSettings.max_decimal[tag] || 2;
+      maxDecInput.className = "settings-col";
+      maxDecInput.style.width = "60px";
+      div.dataset.tag = tag;
+      div.dataset.scale = scaleInput.value;
+      div.dataset.error = errorInput.value;
+      div.dataset.maxDec = maxDecInput.value;
+      scaleInput.addEventListener("input", () => { div.dataset.scale = scaleInput.value; });
+      errorInput.addEventListener("input", () => { div.dataset.error = errorInput.value; });
+      maxDecInput.addEventListener("input", () => { div.dataset.maxDec = maxDecInput.value; });
+      div.appendChild(label);
+      div.appendChild(scaleInput);
+      div.appendChild(errorInput);
+      div.appendChild(maxDecInput);
+      container.appendChild(div);
+    });
+  }
+  modal.style.display = "block";
+});
+
+document.getElementById("tagOptionsClose").addEventListener("click", () => {
+  document.getElementById("tagOptionsModal").style.display = "none";
+});
+
+document.getElementById("saveTagOptionsBtn").addEventListener("click", () => {
+  const container = document.getElementById("tagOptionsContainer");
+  const rows = container.getElementsByClassName("tag-option-row");
+  const newSettings = { scale_factors: {}, error_values: {}, max_decimal: {} };
+  for (let row of rows) {
+    const tag = row.dataset.tag;
+    newSettings.scale_factors[tag] = parseFloat(row.dataset.scale) || 1.0;
+    newSettings.error_values[tag] = row.dataset.error.trim() === "" ? null : parseFloat(row.dataset.error);
+    newSettings.max_decimal[tag] = parseInt(row.dataset.maxDec, 10) || 2;
+  }
+  localStorage.setItem("tagSettings", JSON.stringify(newSettings));
+  logStatus("Tag options saved.");
+  document.getElementById("tagOptionsModal").style.display = "none";
+  // Update settings on the server without fetching new raw data
+  fetch("/update_settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tag_settings: newSettings })
+  }).then(() => {
+    // Reprocess cached raw data using the new tag settings
+    fetch("/reprocess?tags=" + encodeURIComponent(Array.from(selectedTags).join(",")))
+      .then(res => res.json())
+      .then(data => {
+        lastProcessedData = data.processed_values;
+        if (chart) {
+          while (chart.series.length > lastProcessedData.length) {
+            chart.series[chart.series.length - 1].remove(false);
+          }
+          lastProcessedData.forEach((s, i) => {
+            if (chart.series[i]) {
+              chart.series[i].setData(s.data, false);
+              chart.series[i].update({ name: s.name }, false);
+            } else {
+              chart.addSeries(s, false);
+            }
+          });
+          chart.redraw();
+        } else {
+          renderChart(lastProcessedData);
+        }
+        renderDataTable(getVisibleSeriesData());
+        logStatus("Chart updated with new tag settings (raw data unchanged).");
+      });
+  }).catch(err => console.error("Error updating tag settings:", err));
+});

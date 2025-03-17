@@ -11,6 +11,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
   <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+  <!-- XLSX for Excel export -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="script.js" defer></script>
 </head>
@@ -25,7 +26,7 @@
       <aside id="sidebar" class="sidebar">
         <div class="sidebar-header">
           <input type="text" id="tagFilter" placeholder="Filter tags..." />
-          <div id="selectionSummary" class="selection-summary">0/0</div>
+          <div id="selectionSummary" class="selection-summary">Selected: 0 / 0</div>
         </div>
         <div class="sidebar-actions">
           <button id="selectAllBtn" class="action-btn">Select All</button>
@@ -91,13 +92,13 @@
           <div id="groupingModeOptions">
             <button class="grouping-option" data-value="0">0</button>
             <button class="grouping-option" data-value="1">1</button>
-            <button class="grouping-option" data-value="2">2</button>
+            <button class="grouping-option selected" data-value="2">2</button>
           </div>
         </div>
         <div class="option-item">
           <span>Sort Order:</span>
           <button class="action-btn sort-order-btn" data-order="asc">Asc</button>
-          <button class="action-btn sort-order-btn" data-order="desc">Desc</button>
+          <button class="action-btn sort-order-btn selected" data-order="desc">Desc</button>
         </div>
         <div class="option-item">
           <label for="dataOffsetInput">Data Offset (hours):</label>
