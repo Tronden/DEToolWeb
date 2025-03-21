@@ -35,17 +35,31 @@ let endDateStr       = "";
 
 window.addEventListener("beforeunload", ()=>{
   navigator.sendBeacon("/clear_cache");
+  
 });
 
 document.addEventListener("DOMContentLoaded", function(){
+  console.log("DEBUG: DOMContentLoaded fired!");
+
   attachEventListeners();
   initResizer();
   initDatePickers();
 
+  console.log("DEBUG: About to call loadSiteSettings()");
   loadSiteSettings()
-    .then(()=> loadTagList(false))
-    .then(()=> adjustLayout())
-    .then(()=> logStatus("Ready."));
+    .then(() => {
+      console.log("DEBUG: loadSiteSettings done, now loadTagList");
+      return loadTagList(false);
+    })
+    .then(() => {
+      console.log("DEBUG: loadTagList done, adjusting layout");
+      adjustLayout();
+    })
+    .then(() => {
+      console.log("DEBUG: All done => Ready.");
+      logStatus("Ready.");
+    })
+    .catch(err => console.error("Startup chain error:", err));
 });
 
 /** LOGGING *********************************************/
@@ -71,16 +85,14 @@ function attachEventListeners(){
   const moBtn   = document.getElementById("mainOptionsBtn");
   const moClose = document.getElementById("mainOptionsCloseBtn");
   const panel   = document.getElementById("mainOptionsPanel");
-  if(moBtn && panel){
-    moBtn.addEventListener("click", ()=> {
-      panel.style.right= "0px"; // show
-    });
-  }
-  if(moClose && panel){
-    moClose.addEventListener("click", ()=> {
-      panel.style.right= "-300px"; // hide
-    });
-  }
+
+  // Settings panel
+  document.getElementById("mainOptionsBtn").addEventListener("click",()=>{
+    document.getElementById("mainOptionsPanel").classList.add("open");
+  });
+  document.getElementById("mainOptionsCloseBtn").addEventListener("click",()=>{
+    document.getElementById("mainOptionsPanel").classList.remove("open");
+  });
 
   // Toggle sidebar
   const tsb= document.getElementById("toggleSidebarBtn");
@@ -186,12 +198,6 @@ function attachEventListeners(){
     onGraph();
   });
 
-  // Export
-  document.getElementById("exportDataBtn").addEventListener("click", onExportExcel);
-
-  // PDF
-  document.getElementById("generateReportBtn").addEventListener("click", onGeneratePDF);
-
   // Day Lines
   document.getElementById("dayLinesToggle").addEventListener("change", function(){
     toggleDayLines(this.checked);
@@ -228,7 +234,7 @@ function attachEventListeners(){
     selectedTags.clear();
     WORKING_TABLE=[];
     DISPLAYED_DATA=[];
-    if(chart){ chart.destroy(); chart=null; }
+    if(chart){ chart.destroy(); chart=""; }
     clearTable();
     logStatus("Cache cleared.");
   });
@@ -257,13 +263,13 @@ function initResizer(){
     if(ratio>0.9) ratio=0.9;
     setHeightsFromRatio();
   });
-  document.addEventListener("mouseup",()=>{
+  /*document.addEventListener("mouseup",()=>{
     if(isResizing){
       isResizing=false;
       document.body.style.cursor="";
       document.body.style.userSelect="";
     }
-  });
+  }); */
 }
 
 /** FLATPICKR ********************************************/
@@ -291,6 +297,34 @@ function initDatePickers(){
 }
 
 /** SITE SETTINGS ****************************************/
+async function saveSiteSettings() {
+  // Gather your current settings from the DOM or from variables
+  const newSettings = {
+    darkMode: document.getElementById("darkModeToggle").checked,
+    sortOrder,
+    groupingMode,
+    dataOffset,
+    bargeName,
+    bargeNumber,
+    forwardFill,
+    pollInterval,
+    startDate: startDateStr,
+    endDate: endDateStr
+  };
+
+  // Send them to the server via POST
+  const resp = await fetch("/site_settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(newSettings)
+  });
+  if (!resp.ok) {
+    console.error("Error saving site settings", resp.status);
+    return;
+  }
+  console.log("Site settings saved to server");
+}
+
 async function loadSiteSettings(){
   try{
     let r= await fetch("/site_settings");
@@ -298,15 +332,15 @@ async function loadSiteSettings(){
       let d= await r.json();
       document.body.classList.toggle("dark-mode", !!d.darkMode);
       document.getElementById("darkModeToggle").checked= !!d.darkMode;
-      sortOrder     = d.sortOrder||"asc";
-      groupingMode  = d.groupingMode||"2";
-      dataOffset    = parseFloat(d.dataOffset||"1");
-      bargeName     = d.bargeName||"";
-      bargeNumber   = d.bargeNumber||"";
+      sortOrder     = d.sortOrder;
+      groupingMode  = d.groupingMode;
+      dataOffset    = parseFloat(d.dataOffset);
+      bargeName     = d.bargeName;
+      bargeNumber   = d.bargeNumber;
       forwardFill   = !!d.forwardFill;
-      pollInterval  = parseInt(d.pollInterval||"5000",10);
-      startDateStr  = d.startDate||"";
-      endDateStr    = d.endDate||"";
+      pollInterval  = parseInt(d.pollInterval);
+      startDateStr  = d.startDate;
+      endDateStr    = d.endDate;
 
       document.getElementById("forwardFillToggle").checked= forwardFill;
       document.getElementById("dataOffsetInput").value= dataOffset;
@@ -335,29 +369,24 @@ async function loadSiteSettings(){
     }
   }catch(e){
     console.log("loadSiteSettings error:", e);
+    
   }
 }
-async function saveSiteSettings(){
-  let pay={
-    darkMode: document.getElementById("darkModeToggle").checked,
-    sortOrder,
-    groupingMode,
-    dataOffset: parseFloat(document.getElementById("dataOffsetInput").value||"1"),
-    bargeName: document.getElementById("bargeNameInput").value||"",
-    bargeNumber: document.getElementById("bargeNumberInput").value||"",
-    forwardFill: document.getElementById("forwardFillToggle").checked,
-    pollInterval,
-    startDate: startDateStr,
-    endDate: endDateStr
-  };
-  try{
-    await fetch("/site_settings", {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify(pay)
-    });
-  } catch(e){
-    console.log("saveSiteSettings error:", e);
+function saveSettings() {
+  try {
+    const darkMode = document.getElementById("darkModeToggle").checked;
+    localStorage.setItem("darkMode", darkMode);
+    localStorage.setItem("groupingMode", groupingMode);
+    localStorage.setItem("sortOrder", sortOrder);
+    const offsetVal = document.getElementById("dataOffsetInput").value;
+    localStorage.setItem("dataOffset", offsetVal);
+    dataOffset = parseInt(offsetVal);
+    const bargeName = document.getElementById("bargeNameInput").value;
+    const fhNumber = document.getElementById("bargeNumberInput").value;
+    localStorage.setItem("bargeName", bargeName);
+    localStorage.setItem("bargeNumber", fhNumber);
+  } catch (e) {
+    console.error("Error saving settings:", e);
   }
 }
 
@@ -378,6 +407,7 @@ async function loadTagList(refresh=false){
     logStatus("loadTagList error => "+ e.message);
   }
 }
+
 function buildFilteredTree(str){
   if(!str){
     if(filterActive){
@@ -910,10 +940,6 @@ function alignHeaderBodyColumns(headerTbl, bodyTbl){
     }
   }
 }
-
-/** EXPORT EXCEL => button calls onExportExcel() => done above. */
-
-/** PDF => onGeneratePDF() => done above. */
 
 /** DAY LINES */
 function toggleDayLines(checked){

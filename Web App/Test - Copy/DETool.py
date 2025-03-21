@@ -4,7 +4,7 @@ import io
 import json
 import csv
 import time
-import math
+import datetime
 import threading
 import datetime
 import subprocess
@@ -163,11 +163,11 @@ def atomic_write_json(path, data):
 
 def safe_load_json(path, default=None):
     if default is None:
-        default={}
+        default = {}
     if not os.path.exists(path):
         return default
     try:
-        with open(path,"r",encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         python_logger.error(f"safe_load_json({path}) error => {e}")
@@ -267,32 +267,35 @@ def serve_static(fname):
 ###############################################################################
 @app.route("/site_settings", methods=["GET","POST"])
 def site_settings():
-    sp= get_site_settings_path()
-    if request.method=="GET":
-        d= safe_load_json(sp,{
-            "darkMode":False,
-            "sortOrder":"asc",
-            "groupingMode":"2",
-            "dataOffset":1,
-            "bargeName":"",
-            "bargeNumber":"",
-            "forwardFill":False,
-            "pollInterval":5000,
-            "startDate":"",
-            "endDate":""
+    sp = get_site_settings_path()
+    
+    if request.method == "GET":
+        # If "tags" or other keys are needed, add them to the fallback dict
+        d = safe_load_json(sp, {
+            "darkMode": False,
+            "sortOrder": "asc",
+            "groupingMode": "2",
+            "dataOffset": 1,
+            "bargeName": "",
+            "bargeNumber": "",
+            "forwardFill": False,
+            "pollInterval": 5000,
+            "startDate":datetime.datetime.now().strftime("%Y-%m-%d 00:00:00"),
+            "endDate": "",
         })
         # ensure default start/end
         if not d.get("startDate"):
-            now=datetime.datetime.now()
-            midnight= now.replace(hour=0,minute=0,second=0,microsecond=0)
-            d["startDate"]= midnight.strftime("%Y-%m-%d %H:%M:%S")
+            d["startDate"] = datetime.datetime.now().strftime("%Y-%m-%d 00:00:00")
+
         if not d.get("endDate"):
-            d["endDate"]= datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            d["endDate"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         return jsonify(d)
-    else:
-        newd= request.get_json()
-        atomic_write_json(sp,newd)
-        return jsonify({"status":"ok"})
+
+    else:  # POST => Overwrite / create SiteSettings.json
+        newd = request.get_json()
+        atomic_write_json(sp, newd)
+        return jsonify({"status": "ok"})
 
 ###############################################################################
 # TAG SETTINGS (If needed)
@@ -332,7 +335,7 @@ def taglist():
             return jsonify(data)
         except:
             pass
-    # fetch external
+    
     try:
         r= requests.get(EXTERNAL_TAGLIST_URL, timeout=15)
         r.raise_for_status()
@@ -598,82 +601,6 @@ def apply_header_merges(ws, rowData, startRow):
                 ws.merge_cells(start_row=rowNum, start_column=spanStart,
                                end_row=rowNum, end_column=len(rowArr))
 
-@app.route("/export_excel", methods=["POST"])
-def export_excel():
-    global WORKING_TABLE
-    try:
-        body= request.get_json()
-        start_ms= body.get("startDateUnixMillis")
-        end_ms  = body.get("endDateUnixMillis")
-        bname   = body.get("bargeName","UnknownBarge")
-        fnum    = body.get("fhNumber","0000")
-
-        if WORKING_TABLE is None or WORKING_TABLE.empty:
-            return jsonify({"error":"No working table data"}),400
-
-        df= WORKING_TABLE.copy()
-        dt= pd.to_datetime(df["Timestamp"],format="%d/%m/%Y %H:%M:%S",errors="coerce")
-        ms= dt.astype(np.int64)//1_000_000
-        df["__ms__"]= ms
-        if start_ms is not None and end_ms is not None:
-            df= df[(df["__ms__"]>= start_ms)&(df["__ms__"]<= end_ms)]
-        df.drop(columns=["__ms__"], inplace=True, errors="ignore")
-        if df.empty:
-            return jsonify({"error":"No data in that range"}),400
-
-        cols= df.columns.tolist()
-        if "Timestamp" in cols:
-            cols.remove("Timestamp")
-            cols=["Timestamp"]+ cols
-        df_exp= df[cols].copy()
-
-        wb= openpyxl.Workbook()
-        ws= wb.active
-        ws.title= "Data"
-
-        # big top row
-        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(cols))
-        topCell= ws.cell(row=1, column=1, value="DETool Multi-row Export")
-        topCell.alignment= Alignment(horizontal="center", vertical="center")
-
-        # multi-row header
-        rowHeaders= build_header_rows(cols)
-        for rIndex, rowArr in enumerate(rowHeaders):
-            rowNum= 2+ rIndex
-            for cIndex, val in enumerate(rowArr):
-                cell= ws.cell(row=rowNum, column=cIndex+1, value= val)
-                cell.alignment= Alignment(horizontal="center",vertical="center")
-        apply_header_merges(ws, rowHeaders, 2)
-
-        dataStart= 2+ len(rowHeaders)
-        for row_i in range(len(df_exp)):
-            rowDat= df_exp.iloc[row_i]
-            for col_i, colName in enumerate(cols):
-                val= rowDat[colName]
-                ws.cell(row= dataStart+row_i, column= col_i+1, value= val).alignment= Alignment(horizontal="center", vertical="center")
-
-        # auto-size
-        for i, cName in enumerate(cols, start=1):
-            length= len(str(cName))
-            colVals= df_exp[cName].astype(str)
-            maxLen= colVals.map(len).max() if not colVals.empty else 0
-            length= max(length, maxLen)
-            ws.column_dimensions[get_column_letter(i)].width= length+2
-
-        now= datetime.datetime.now()
-        ds= now.strftime("%Y%m%d")
-        fname= f"FH {fnum} {bname} {ds}.xlsx"
-        bio= io.BytesIO()
-        wb.save(bio)
-        bio.seek(0)
-        resp= make_response(bio.read())
-        resp.headers["Content-Disposition"]= f'attachment; filename="{fname}"'
-        resp.headers["Content-Type"]= "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        python_logger.info(f"Excel export => {fname}")
-        return resp
-    except Exception as e:
-        python_logger.error(f"Excel export error => {e}")
-        return jsonify({"error":str(e)}),500
 
 ###############################################################################
 # CLEAR CACHE
@@ -681,7 +608,6 @@ def export_excel():
 @app.route("/clear_cache", methods=["POST"])
 def clear_cache():
     global RAW_TABLE, WORKING_TABLE, TAGLIST_CACHE, TAG_COVERAGE, RAW_TABLE_SIGNATURE
-    global LAST_SETTINGS, LAST_TAG_SETTINGS
 
     with global_lock:
         RAW_TABLE=None
@@ -689,8 +615,6 @@ def clear_cache():
         TAGLIST_CACHE=None
         TAG_COVERAGE={}
         RAW_TABLE_SIGNATURE=None
-        LAST_SETTINGS=None
-        LAST_TAG_SETTINGS=None
 
         # remove cached files
         for p in [ get_taglist_cache_path(),

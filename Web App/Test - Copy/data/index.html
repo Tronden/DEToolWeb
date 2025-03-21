@@ -8,6 +8,7 @@
   <!-- Highcharts (Stock) -->
   <script src="https://code.highcharts.com/stock/highstock.js"></script>
   <script src="https://code.highcharts.com/modules/exporting.js"></script>
+  <script src="https://code.highcharts.com/modules/accessibility.js"></script>
 
   <!-- jsPDF + autotable -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -16,9 +17,6 @@
   <!-- Flatpickr -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css"/>
   <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
-
-  <!-- XLSX (optional) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
   <!-- Custom CSS -->
   <link rel="stylesheet" href="style.css"/>
@@ -71,6 +69,8 @@
           <button id="graphBtn" class="action-btn">Graph</button>
           <button id="exportDataBtn" class="action-btn">Export Data</button>
           <button id="generateReportBtn" class="action-btn">Generate Report</button>
+          <button id="clearCacheBtn" class="action-btn">Clear Cache</button>
+
         </div>
 
         <div style="margin-left:auto; display:flex; align-items:center; gap:20px;">
@@ -99,7 +99,6 @@
 
       <div id="chartContainer" class="chart-container"></div>
       <div id="resizer" class="resizer"></div>
-
       <div id="dataTableHeaderContainer" class="table-header"></div>
       <div id="dataTableBodyContainer" class="table-body"></div>
     </section>
