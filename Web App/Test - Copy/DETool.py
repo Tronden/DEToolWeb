@@ -12,11 +12,8 @@ import requests
 import pandas as pd
 import numpy as np
 import concurrent.futures
-from flask import Flask, jsonify, request, send_from_directory, make_response
+from flask import Flask, jsonify, request, send_from_directory, Response
 from threading import Lock
-import openpyxl
-from openpyxl.styles import Alignment
-from openpyxl.utils import get_column_letter
 import pystray
 from pystray import Menu, MenuItem
 from PIL import Image, ImageDraw
@@ -269,10 +266,9 @@ def serve_static(fname):
 def site_settings():
     sp = get_site_settings_path()
     
-    if request.method == "GET":
-        # If "tags" or other keys are needed, add them to the fallback dict
+    if request.method == "GET":  # Check if file SiteSettings exists, if not load deafult data
         d = safe_load_json(sp, {
-            "darkMode": False,
+            "darkMode": True,
             "sortOrder": "asc",
             "groupingMode": "2",
             "dataOffset": 1,
@@ -563,45 +559,134 @@ def do_build_working_table(raw_df: pd.DataFrame, offset_hours: float, forward_fi
 
     return df
 
-###############################################################################
-# MULTI-ROW EXCEL
-###############################################################################
-def parse_col_hierarchy(col):
-    return col.split(".")
+def generate_multilevel_headers(columns):
+    """
+    Create 3 rows of headers from a list of column names.
+    For CSV, there's no "merged cell", so we just produce
+    3 separate lines that give the illusion of a multi-level header.
+    
+    columns: e.g. ["Timestamp", "Engine.Genset1.VoltageL1", ...]
+    returns (row1, row2, row3) where each is a list of strings
+    """
+    row1 = []
+    row2 = []
+    row3 = []
 
-def build_header_rows(columns):
-    splitted= [parse_col_hierarchy(c) for c in columns]
-    if not splitted:
-        return [[]]
-    max_depth= max(len(sp) for sp in splitted)
-    # rowHeaders[rIndex][colIndex]
-    rowHeaders= [ [""]*len(columns) for _ in range(max_depth) ]
-    for cIndex, spList in enumerate(splitted):
-        for rIndex, token in enumerate(spList):
-            rowHeaders[rIndex][cIndex]= token
-    return rowHeaders
+    for col in columns:
+        # Example parse: 
+        if col == "Timestamp":
+            # Put everything in the last row for "Timestamp"
+            row1.append("")
+            row2.append("")
+            row3.append("Timestamp")
+        else:
+            parts = col.split(".")
+            if len(parts) == 1:
+                # e.g. ["VoltageL1"]
+                row1.append("")
+                row2.append("")
+                row3.append(parts[0])
+            elif len(parts) == 2:
+                # e.g. ["Engine","VoltageL1"]
+                row1.append(parts[0])
+                row2.append("")
+                row3.append(parts[1])
+            else:
+                # e.g. ["Engine","Genset1","VoltageL1"]
+                row1.append(parts[0])
+                row2.append(parts[1])
+                row3.append(".".join(parts[2:]))
 
-def apply_header_merges(ws, rowData, startRow):
-    """For consecutive duplicates in each row, merge them."""
-    for rIndex, rowArr in enumerate(rowData):
-        rowNum= startRow + rIndex
-        lastVal= None
-        spanStart= 1
-        for i,val in enumerate(rowArr):
-            colPos= i+1
-            if val!= lastVal:
-                if lastVal is not None:
-                    if colPos-1> spanStart:
-                        ws.merge_cells(start_row=rowNum, start_column=spanStart,
-                                       end_row=rowNum, end_column=(colPos-1))
-                spanStart= colPos
-                lastVal= val
-        if lastVal is not None and spanStart< len(rowArr):
-            if len(rowArr)> spanStart:
-                ws.merge_cells(start_row=rowNum, start_column=spanStart,
-                               end_row=rowNum, end_column=len(rowArr))
+    return row1, row2, row3
 
+@app.route("/export_csv", methods=["POST"])
+def export_csv():
+  # (1) Load site settings, build filename, etc. (omitted for brevity)
+    settings = safe_load_json(get_site_settings_path(), {
+        "bargeName": "UnknownBarge",
+        "bargeNumber": "0000"
+    })
+    barge_name = settings.get("bargeName", "UnknownBarge")
+    barge_num  = settings.get("bargeNumber", "0000")
+    filename   = f"{barge_num}_{barge_name}_export.csv"
 
+    # (2) Read original CSV
+    csv_path = get_working_csv_path()
+    if not os.path.exists(csv_path):
+        return jsonify({"error": "No data in WorkingTable.csv"}), 404
+
+    with open(csv_path, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    if not lines:
+        return jsonify({"error": "No data in WorkingTable.csv"}), 404
+
+    # Grab header row
+    header_line = lines[0]
+    all_cols = header_line.split(",")
+
+    # If we want to remove "NumericTimestamp"
+    if "NumericTimestamp" in all_cols:
+        idx_num = all_cols.index("NumericTimestamp")
+        all_cols.pop(idx_num)
+    else:
+        idx_num = None
+
+    # Find index of "Timestamp"
+    timestamp_idx = None
+    if "Timestamp" in all_cols:
+        timestamp_idx = all_cols.index("Timestamp")
+
+    # Create your multi-level headers
+    row1, row2, row3 = generate_multilevel_headers(all_cols)
+
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+
+    # Write 3 rows of custom headers
+    writer.writerow(row1)
+    writer.writerow(row2)
+    writer.writerow(row3)
+
+    # Read the rest of the rows
+    original_reader = csv.reader(lines[1:])
+
+    # Figure out original indexes
+    original_headers = header_line.split(",")
+
+    # We'll remove numeric timestamp column from each row if idx_num is not None
+    for row_data in original_reader:
+        if not row_data:
+            continue
+
+        # Remove numeric timestamp cell
+        if idx_num is not None and len(row_data) > idx_num:
+            row_data.pop(idx_num)
+
+        # Reformat the Timestamp if present
+        if timestamp_idx is not None and timestamp_idx < len(row_data):
+            raw_ts = row_data[timestamp_idx]
+
+            try:
+                # Parse "dd/mm/yyyy HH:MM:SS"
+                dt_obj = datetime.datetime.strptime(raw_ts, "%d/%m/%Y %H:%M:%S")
+                # Reformat => "YYYY-MM-DD HH:MM:SS" or any style you want
+                row_data[timestamp_idx] = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                # If we fail, either leave it as-is or set blank
+                pass
+
+        writer.writerow(row_data)
+
+    final_csv = output.getvalue()
+    output.close()
+
+    filename = "MyExport.csv"  # or use bargeName/bargeNumber, etc.
+    return Response(
+            final_csv,
+            mimetype="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
 ###############################################################################
 # CLEAR CACHE
 ###############################################################################

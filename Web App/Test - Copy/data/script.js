@@ -197,6 +197,11 @@ function attachEventListeners(){
     stopAutoRefresh();
     onGraph();
   });
+  
+  document.getElementById("exportDataBtn").addEventListener("click", ()=>{
+    
+   })
+  
 
   // Day Lines
   document.getElementById("dayLinesToggle").addEventListener("change", function(){
@@ -263,13 +268,13 @@ function initResizer(){
     if(ratio>0.9) ratio=0.9;
     setHeightsFromRatio();
   });
-  /*document.addEventListener("mouseup",()=>{
+  document.addEventListener("mouseup",()=>{
     if(isResizing){
       isResizing=false;
       document.body.style.cursor="";
       document.body.style.userSelect="";
     }
-  }); */
+  }); 
 }
 
 /** FLATPICKR ********************************************/
@@ -1110,6 +1115,69 @@ function saveTagOptions(){
   logStatus("Tag options => full rebuild");
   rebuildWorkingTable(true);
 }
+
+
+// ------------------------------------------------
+  // EXPORT
+  // ------------------------------------------------
+document.getElementById("exportDataBtn").addEventListener("click", async ()=>{
+  let startMs, endMs;
+  if (chart) {
+    const ex = chart.xAxis[0].getExtremes();
+    startMs = Math.floor(ex.min);
+    endMs   = Math.floor(ex.max);
+  } else {
+    // fallback logic, etc.
+  }
+
+  const bn = document.getElementById("bargeNameInput").value || "UnknownBarge";
+  const fh = document.getElementById("bargeNumberInput").value || "0000";
+  const pay = {
+    startDateUnixMillis: startMs,
+    endDateUnixMillis: endMs,
+    bargeName: bn,
+    fhNumber: fh
+  };
+
+  logStatus("Exporting data to csv...");
+  sendLogEvent("user", "csv export range = "+startMs+"-"+endMs);
+
+  try {
+    const r = await fetch("/export_csv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(pay)
+    });
+    if (!r.ok) {
+      let e = null;
+      try { e = await r.json(); } catch {}
+      const emsg = (e && e.error) ? e.error : "HTTP " + r.status;
+      logStatus("csv export error: " + emsg);
+      return;
+    }
+    const blob = await r.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.style.display = "none";
+    a.href = url;
+
+    // Attempt to get a filename from Content-Disposition
+    let cd = r.headers.get("Content-Disposition");
+    let fn = "Export.csv";
+    if (cd && cd.includes("filename=")) {
+      fn = cd.split("filename=")[1].replace(/\"/g,"");
+    }
+    a.download = fn;
+
+    document.body.appendChild(a);
+    a.click();
+    URL.revokeObjectURL(url);
+    logStatus("csv downloaded successfully.");
+  } catch(e) {
+    logStatus("csv fetch error: " + e.message);
+  }
+});
+
 
 /** LAYOUT & THEME ***************************************/
 function adjustLayout(){
