@@ -84,7 +84,7 @@ WORKING_TABLE       = None
 TAGLIST_CACHE       = None
 TAG_COVERAGE        = {}
 LAST_SETTINGS       = None  # site settings
-LAST_TAG_SETTINGS   = None  # if you want partial tag logic
+LAST_TAG_SETTINGS   = None  
 RAW_TABLE_SIGNATURE = None
 
 ###############################################################################
@@ -263,6 +263,7 @@ def root():
 @app.route("/<path:fname>")
 def serve_static(fname):
    return send_from_directory(DATA_DIR, fname)
+   
 
 ###############################################################################
 # SITE SETTINGS
@@ -270,29 +271,36 @@ def serve_static(fname):
 @app.route("/site_settings", methods=["GET","POST"])
 def site_settings():
     sp = get_site_settings_path()
-    
+
+    # Default settings that we actually want to persist
+    default_settings = {
+        "darkMode": False,
+        "sortOrder": "asc",
+        "groupingMode": "2",
+        "dataOffset": 1,
+        "bargeName": "",
+        "bargeNumber": "",
+        "forwardFill": False,
+        "pollInterval": 5000
+    }
+
     if request.method == "GET":
-        d = safe_load_json(sp, {
-            "darkMode": True,
-            "sortOrder": "asc",
-            "groupingMode": "2",
-            "dataOffset": 1,
-            "bargeName": "",
-            "bargeNumber": "",
-            "forwardFill": False,
-            "pollInterval": 5000,
-            "startDate":datetime.datetime.now().strftime("%Y-%m-%d 00:00:00"),
-            "endDate": "",
-        })
-        if not d.get("startDate"):
-            d["startDate"] = datetime.datetime.now().strftime("%Y-%m-%d 00:00:00")
-        if not d.get("endDate"):
-            d["endDate"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        d = safe_load_json(sp, default=default_settings)
+
+        # We do NOT keep any stored start/end in the file
+        # But for the API response, you might want ephemeral defaults:
+        d["startDate"] = datetime.datetime.now().strftime("%Y-%m-%d 00:00:00")
+        d["endDate"]   = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         return jsonify(d)
 
-    else:  # POST => Overwrite / create SiteSettings.json
-        newd = request.get_json()
+    else:  # POST => save to SiteSettings.json, excluding start/end
+        newd = request.get_json() or {}
+        
+        # Remove startDate and endDate so they are not persisted
+        newd.pop("startDate", None)
+        newd.pop("endDate", None)
+
         atomic_write_json(sp, newd)
         return jsonify({"status": "ok"})
 
@@ -663,7 +671,7 @@ def export_csv():
             try:
                 # If we used day/month/year hour:minute:second.microsecond
                 # then parse with .%f:
-                dt_obj = datetime.datetime.strptime(raw_ts, "%d/%m/%Y %H:%M:%S")
+                dt_obj = datetime.datetime.strptime(raw_ts, "%d/%m/%Y %H:%M:%S.%f")
                 # Reformat => "YYYY-MM-DD HH:MM:SS.%f"
                 row_data[timestamp_idx] = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
             except ValueError:
