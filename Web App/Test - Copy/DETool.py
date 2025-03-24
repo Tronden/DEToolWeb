@@ -123,8 +123,13 @@ def get_working_csv_path():
 def get_coverage_json_path():
     return os.path.join(cache_folder(), "TagCoverage.json")
 
+### CHANGED: Now show microseconds with .%f or just seconds if you prefer
 def fmt_timestamp(dt):
-    return dt.strftime("%d/%m/%Y %H:%M:%S")
+    """
+    Format a datetime with day/month/year hour:minute:second + microseconds.
+    If you only want seconds, remove ".%f".
+    """
+    return dt.strftime("%d/%m/%Y %H:%M:%S.%f")
 
 ###############################################################################
 # CSV LOAD/SAVE FOR DATAFRAMES
@@ -257,7 +262,7 @@ def root():
 
 @app.route("/<path:fname>")
 def serve_static(fname):
-    return send_from_directory(DATA_DIR, fname)
+   return send_from_directory(DATA_DIR, fname)
 
 ###############################################################################
 # SITE SETTINGS
@@ -266,7 +271,7 @@ def serve_static(fname):
 def site_settings():
     sp = get_site_settings_path()
     
-    if request.method == "GET":  # Check if file SiteSettings exists, if not load deafult data
+    if request.method == "GET":
         d = safe_load_json(sp, {
             "darkMode": True,
             "sortOrder": "asc",
@@ -279,10 +284,8 @@ def site_settings():
             "startDate":datetime.datetime.now().strftime("%Y-%m-%d 00:00:00"),
             "endDate": "",
         })
-        # ensure default start/end
         if not d.get("startDate"):
             d["startDate"] = datetime.datetime.now().strftime("%Y-%m-%d 00:00:00")
-
         if not d.get("endDate"):
             d["endDate"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -394,6 +397,7 @@ def merge_new_data_into_raw_table(df_new):
     if RAW_TABLE is None or RAW_TABLE.empty:
         RAW_TABLE= df_new.sort_values("NumericTimestamp").reset_index(drop=True)
         return
+
     mg= pd.merge(
         RAW_TABLE, df_new,
         on="NumericTimestamp", how="outer", suffixes=("","_new")
@@ -405,8 +409,11 @@ def merge_new_data_into_raw_table(df_new):
         if newc in mg.columns:
             mg[c] = mg[c].where(mg[newc].isna(), mg[newc])
             mg.drop(columns=[newc], inplace=True, errors="ignore")
+
     if "Timestamp_new" in mg.columns:
         mg.drop(columns=["Timestamp_new"], inplace=True)
+
+    # Convert NumericTimestamp back to date/time with ms
     mg["Timestamp"]= mg["NumericTimestamp"].apply(
         lambda x: fmt_timestamp(pd.to_datetime(x, unit="ms"))
     )
@@ -474,10 +481,16 @@ def fetch_data_endpoint():
                 if not arr: continue
                 df= pd.DataFrame(arr)
                 if df.empty: continue
+                # Convert Value to numeric
                 df["Value"]= pd.to_numeric(df["Value"], errors="coerce")
                 df.replace([np.inf,-np.inf], np.nan, inplace=True)
+
+                # Parse "Date" -> real datetime
                 df["Timestamp"]= pd.to_datetime(df["Date"], errors="coerce")
+
+                # Convert to ms int64
                 df["NumericTimestamp"]= (df["Timestamp"].astype(np.int64)//1_000_000)
+
                 df.sort_values("Timestamp", inplace=True)
                 df_ren= df[["NumericTimestamp","Timestamp","Value"]].rename(columns={"Value":tg})
                 merge_new_data_into_raw_table(df_ren)
@@ -510,8 +523,6 @@ def build_working_table_endpoint():
     new_offset= float(req.get("dataOffset", 1))
     new_ff    = bool(req.get("forwardFill", False))
 
-    # load site settings from disk, if you want to unify it. 
-    # Or directly trust these from the request
     need_rebuild= False
     if LAST_SETTINGS is None:
         need_rebuild= True
@@ -548,60 +559,54 @@ def do_build_working_table(raw_df: pd.DataFrame, offset_hours: float, forward_fi
     df= raw_df.copy()
     # forward fill if needed
     if forward_fill:
-        df= df.ffill()
+        df_non_ts = df.drop(columns=["NumericTimestamp"], errors="ignore")
+        df_non_ts = df_non_ts.ffill()
+        df_ts     = df[["NumericTimestamp"]].copy()
+        df = pd.concat([df_ts, df_non_ts], axis=1)
+    # else we do nothing special
 
-    # offset
     offMs= int(offset_hours*3600000)
     df["NumericTimestamp"]= df["NumericTimestamp"] + offMs
+
+    ### CHANGED: Now show sub-seconds if desired
     df["Timestamp"]= df["NumericTimestamp"].apply(
         lambda x: fmt_timestamp(pd.to_datetime(x, unit="ms"))
     )
+    print(df)
 
     return df
 
+###############################################################################
+# MULTI-LEVEL HEADERS FOR CSV
+###############################################################################
 def generate_multilevel_headers(columns):
-    """
-    Create 3 rows of headers from a list of column names.
-    For CSV, there's no "merged cell", so we just produce
-    3 separate lines that give the illusion of a multi-level header.
-    
-    columns: e.g. ["Timestamp", "Engine.Genset1.VoltageL1", ...]
-    returns (row1, row2, row3) where each is a list of strings
-    """
     row1 = []
     row2 = []
     row3 = []
 
     for col in columns:
-        # Example parse: 
         if col == "Timestamp":
-            # Put everything in the last row for "Timestamp"
             row1.append("")
             row2.append("")
             row3.append("Timestamp")
         else:
             parts = col.split(".")
             if len(parts) == 1:
-                # e.g. ["VoltageL1"]
                 row1.append("")
                 row2.append("")
                 row3.append(parts[0])
             elif len(parts) == 2:
-                # e.g. ["Engine","VoltageL1"]
                 row1.append(parts[0])
                 row2.append("")
                 row3.append(parts[1])
             else:
-                # e.g. ["Engine","Genset1","VoltageL1"]
                 row1.append(parts[0])
                 row2.append(parts[1])
                 row3.append(".".join(parts[2:]))
-
     return row1, row2, row3
 
 @app.route("/export_csv", methods=["POST"])
 def export_csv():
-  # (1) Load site settings, build filename, etc. (omitted for brevity)
     settings = safe_load_json(get_site_settings_path(), {
         "bargeName": "UnknownBarge",
         "bargeNumber": "0000"
@@ -610,7 +615,6 @@ def export_csv():
     barge_num  = settings.get("bargeNumber", "0000")
     filename   = f"{barge_num}_{barge_name}_export.csv"
 
-    # (2) Read original CSV
     csv_path = get_working_csv_path()
     if not os.path.exists(csv_path):
         return jsonify({"error": "No data in WorkingTable.csv"}), 404
@@ -621,7 +625,6 @@ def export_csv():
     if not lines:
         return jsonify({"error": "No data in WorkingTable.csv"}), 404
 
-    # Grab header row
     header_line = lines[0]
     all_cols = header_line.split(",")
 
@@ -632,48 +635,39 @@ def export_csv():
     else:
         idx_num = None
 
-    # Find index of "Timestamp"
     timestamp_idx = None
     if "Timestamp" in all_cols:
         timestamp_idx = all_cols.index("Timestamp")
 
-    # Create your multi-level headers
     row1, row2, row3 = generate_multilevel_headers(all_cols)
 
     output = io.StringIO()
     writer = csv.writer(output, lineterminator="\n")
 
-    # Write 3 rows of custom headers
     writer.writerow(row1)
     writer.writerow(row2)
     writer.writerow(row3)
 
-    # Read the rest of the rows
     original_reader = csv.reader(lines[1:])
-
-    # Figure out original indexes
     original_headers = header_line.split(",")
 
-    # We'll remove numeric timestamp column from each row if idx_num is not None
     for row_data in original_reader:
         if not row_data:
             continue
 
-        # Remove numeric timestamp cell
         if idx_num is not None and len(row_data) > idx_num:
             row_data.pop(idx_num)
 
-        # Reformat the Timestamp if present
         if timestamp_idx is not None and timestamp_idx < len(row_data):
             raw_ts = row_data[timestamp_idx]
-
             try:
-                # Parse "dd/mm/yyyy HH:MM:SS"
+                # If we used day/month/year hour:minute:second.microsecond
+                # then parse with .%f:
                 dt_obj = datetime.datetime.strptime(raw_ts, "%d/%m/%Y %H:%M:%S")
-                # Reformat => "YYYY-MM-DD HH:MM:SS" or any style you want
+                # Reformat => "YYYY-MM-DD HH:MM:SS.%f"
                 row_data[timestamp_idx] = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
             except ValueError:
-                # If we fail, either leave it as-is or set blank
+                # fallback
                 pass
 
         writer.writerow(row_data)
@@ -681,12 +675,12 @@ def export_csv():
     final_csv = output.getvalue()
     output.close()
 
-    filename = "MyExport.csv"  # or use bargeName/bargeNumber, etc.
     return Response(
-            final_csv,
-            mimetype="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
-        )
+        final_csv,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
 ###############################################################################
 # CLEAR CACHE
 ###############################################################################

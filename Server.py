@@ -86,7 +86,7 @@ def values():
     date_format_param = request.args.get("dateFormat", "iso").lower()
     
     data = []
-    step = 60  # one-minute step
+    step = 45  # one-minute step
     current_ts = start_ts
 
     while current_ts <= end_ts:
